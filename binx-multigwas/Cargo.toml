@@ -1,0 +1,10 @@
+[package]
+name = "binx-multigwas"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Multiallelic GWAS for binx"
+
+[dependencies]
+anyhow = "1"
+binx-core = { path = "../binx-core" }

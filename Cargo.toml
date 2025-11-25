@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "binx-core",
+    "binx-gwas",
+    "binx-multigwas",
+    "binx-cli",
+]
+
+resolver = "2"
