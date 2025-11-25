@@ -29,6 +29,14 @@ enum Commands {
         #[arg(long)]
         trait_name: String,
 
+        /// Comma-separated covariate names from phenotype file
+        #[arg(long)]
+        covariates: Option<String>,
+
+        /// Optional TSV with PCs (sample_id + PC1..PCn)
+        #[arg(long)]
+        pcs: Option<String>,
+
         /// Ploidy (e.g., 2, 4, 6)
         #[arg(long)]
         ploidy: u8,
@@ -70,15 +78,27 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Gwas {
-            geno,
-            pheno,
-            trait_name,
+        geno,
+        pheno,
+        trait_name,
+        covariates,
+        pcs,
+        ploidy,
+        model,
+        out,
+    } => {
+        let covariate_list = covariates.as_deref().map(parse_csv_list);
+        binx_gwas::run_gwas(
+            &geno,
+            &pheno,
+            &trait_name,
+            covariate_list.as_deref(),
+            pcs.as_deref(),
             ploidy,
-            model,
-            out,
-        } => {
-            binx_gwas::run_gwas(&geno, &pheno, &trait_name, ploidy, &model, &out)?;
-        }
+            &model,
+            &out,
+        )?;
+    }
         Commands::Multigwas {
             geno,
             pheno,
@@ -105,4 +125,12 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn parse_csv_list(s: &str) -> Vec<String> {
+    s.split(',')
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+        .collect()
 }

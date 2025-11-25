@@ -195,6 +195,54 @@ pub fn load_kinship_from_tsv<P: AsRef<Path>>(path: P) -> Result<KinshipMatrix> {
     })
 }
 
+/// Phase 2: load PCs from TSV.
+/// Expecting rows of: sample_id  PC1  PC2 ...
+pub fn load_pcs_from_tsv<P: AsRef<Path>>(path: P) -> Result<PcMatrix> {
+    let file = File::open(path)?;
+    let mut rdr = csv::ReaderBuilder::new().delimiter(b'\t').from_reader(file);
+
+    let headers = rdr.headers()?.clone();
+    if headers.len() < 2 {
+        return Err(anyhow::anyhow!(
+            "PC file must have at least one PC column besides sample_id"
+        ));
+    }
+    let n_pcs = headers.len() - 1;
+
+    let mut sample_ids = Vec::new();
+    let mut rows: Vec<Vec<f64>> = Vec::new();
+
+    for result in rdr.records() {
+        let record = result?;
+        sample_ids.push(
+            record
+                .get(0)
+                .ok_or_else(|| anyhow::anyhow!("Missing sample_id column in PC file"))?
+                .to_string(),
+        );
+
+        let mut row = Vec::with_capacity(n_pcs);
+        for i in 1..record.len() {
+            let val_str = record.get(i).unwrap();
+            let val: f64 = val_str.parse().map_err(|e| {
+                anyhow::anyhow!("Failed to parse PC value '{}' at col {}: {}", val_str, i, e)
+            })?;
+            row.push(val);
+        }
+        rows.push(row);
+    }
+
+    let n_samples = sample_ids.len();
+    let mut pcs = Array2::<f64>::zeros((n_samples, n_pcs));
+    for (i, row) in rows.into_iter().enumerate() {
+        for (j, val) in row.into_iter().enumerate() {
+            pcs[[i, j]] = val;
+        }
+    }
+
+    Ok(PcMatrix { sample_ids, pcs })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,5 +289,16 @@ mod tests {
         assert_eq!(kin.sample_ids, vec!["S1", "S2"]);
         assert_eq!(kin.matrix[[0, 1]], 0.2);
         assert_eq!(kin.matrix[[1, 0]], 0.2);
+    }
+
+    #[test]
+    fn load_pcs_parses_matrix() {
+        let contents = "sample_id\tPC1\tPC2\nS1\t0.1\t0.2\nS2\t0.3\t0.4\n";
+        let file = write_temp(contents);
+
+        let pcs = load_pcs_from_tsv(file.path()).expect("load pcs");
+        assert_eq!(pcs.sample_ids, vec!["S1", "S2"]);
+        assert_eq!(pcs.pcs.shape(), &[2, 2]);
+        assert_eq!(pcs.pcs[[0, 1]], 0.2);
     }
 }

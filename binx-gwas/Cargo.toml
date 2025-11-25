@@ -11,3 +11,4 @@ ndarray = "0.15"
 statrs = "0.16"
 binx-core = { path = "../binx-core" }
 csv = "1.3"
+nalgebra = "0.29"
