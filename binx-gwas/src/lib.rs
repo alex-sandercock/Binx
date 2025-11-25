@@ -2,9 +2,9 @@ use anyhow::Result;
 use binx_core::{
     load_genotypes_biallelic_from_tsv, load_phenotypes_from_tsv, GenotypeMatrixBiallelic,
 };
-use ndarray::{s, Array1, Array2, Axis};
-use ndarray_linalg::Inverse;
-use statrs::distribution::StudentsT;
+use ndarray::{Array1, Axis};
+use statrs::distribution::{ContinuousCDF, StudentsT};
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Gene action models (Phase 2: only additive is implemented).
@@ -39,14 +39,10 @@ pub fn run_gwas<P: AsRef<Path>>(
     let pheno = load_phenotypes_from_tsv(&pheno_path)?;
 
     // Extract trait vector y, aligned to genotype sample order.
-    let (y, sample_ids) = align_trait_to_genotypes(&pheno, trait_name, &geno)?;
-
-    // Phase 2: No covariates/PCs yet: X0 = intercept only.
-    let n = sample_ids.len();
-    let x0 = Array2::<f64>::ones((n, 1)); // intercept
+    let (y, _) = align_trait_to_genotypes(&pheno, trait_name, &geno)?;
 
     // Run LM-based GWAS.
-    let results = run_lm_gwas(&geno, &y, &x0, model)?;
+    let results = run_lm_gwas(&geno, &y, model)?;
 
     // Write TSV output.
     write_results_tsv(out_path, &results)?;
@@ -73,62 +69,113 @@ fn align_trait_to_genotypes(
         .get(trait_name)
         .ok_or_else(|| anyhow::anyhow!("Trait '{}' not found in phenotype file", trait_name))?;
 
-    // For now, assume same order; later, properly align by ID.
-    if pheno.sample_ids != geno.sample_ids {
-        // TODO: implement proper alignment; this is a placeholder.
+    if pheno.sample_ids.len() != y_full.len() {
         return Err(anyhow::anyhow!(
-            "Sample IDs in phenotype and genotype files do not match (Phase 2 placeholder)"
+            "Phenotype sample_id count ({}) does not match trait length ({})",
+            pheno.sample_ids.len(),
+            y_full.len()
         ));
     }
 
-    Ok((y_full.clone(), geno.sample_ids.clone()))
+    // Build lookup from sample_id -> phenotype index (fail on duplicates).
+    let mut pheno_index: HashMap<&str, usize> = HashMap::new();
+    for (idx, sid) in pheno.sample_ids.iter().enumerate() {
+        if pheno_index.insert(sid.as_str(), idx).is_some() {
+            return Err(anyhow::anyhow!(
+                "Duplicate sample_id '{}' in phenotype table",
+                sid
+            ));
+        }
+    }
+
+    let mut aligned = Vec::with_capacity(geno.sample_ids.len());
+    let mut missing = Vec::new();
+    for sid in &geno.sample_ids {
+        match pheno_index.get(sid.as_str()) {
+            Some(idx) => aligned.push(y_full[*idx]),
+            None => missing.push(sid.clone()),
+        }
+    }
+
+    if !missing.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Missing phenotype rows for sample_ids: {}",
+            missing.join(", ")
+        ));
+    }
+
+    Ok((Array1::from(aligned), geno.sample_ids.clone()))
 }
 
 /// Simple LM GWAS: y ~ 1 + marker
 fn run_lm_gwas(
     geno: &GenotypeMatrixBiallelic,
     y: &Array1<f64>,
-    x0: &Array2<f64>,
     model: GeneActionModel,
 ) -> Result<Vec<MarkerResult>> {
     let n_samples = geno.sample_ids.len();
     let n_markers = geno.marker_ids.len();
 
     assert_eq!(y.len(), n_samples);
-    assert_eq!(x0.nrows(), n_samples);
+
+    let y_slice = y.as_slice().ok_or_else(|| {
+        anyhow::anyhow!("Trait array is not contiguous; cannot obtain slice for LM computation")
+    })?;
 
     let mut results = Vec::with_capacity(n_markers);
 
     for (marker_idx, marker_id) in geno.marker_ids.iter().enumerate() {
         // Extract dosage vector for this marker (length n_samples).
         let dosage = geno.dosages.index_axis(Axis(0), marker_idx).to_owned();
+        let x = dosage.as_slice().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Dosage array is not contiguous; cannot obtain slice for marker {}",
+                marker_id
+            )
+        })?;
 
         // Encode marker according to gene-action model.
-        let marker_design = encode_marker(&dosage, geno.ploidy, model)?;
+        let encoded = encode_marker(x, geno.ploidy, model)?;
 
-        // Build full design matrix: [X0 | marker_design]
-        // Phase 2: X0 is n×1 (intercept), marker_design is n×1 (additive).
-        let x_full = hstack(&[x0.view(), marker_design.view()])?;
+        // Simple closed-form OLS for y ~ 1 + x (additive model).
+        let n = n_samples as f64;
+        let sum_x: f64 = encoded.iter().sum();
+        let sum_y: f64 = y_slice.iter().sum();
+        let sum_xx: f64 = encoded.iter().map(|v| v * v).sum();
+        let sum_xy: f64 = encoded
+            .iter()
+            .zip(y_slice.iter())
+            .map(|(a, b)| a * b)
+            .sum();
 
-        // OLS: beta = (X^T X)^(-1) X^T y
-        let xtx = x_full.t().dot(&x_full);
-        let xtx_inv = xtx.inv()?;
-        let xty = x_full.t().dot(y);
-        let beta = xtx_inv.dot(&xty);
+        let mean_x = sum_x / n;
+        let mean_y = sum_y / n;
+        let sxx = sum_xx - n * mean_x * mean_x;
+        let sxy = sum_xy - n * mean_x * mean_y;
 
-        // Residuals and variance estimate.
-        let y_hat = x_full.dot(&beta);
-        let resid = y - &y_hat;
-        let df = (n_samples as f64) - (beta.len() as f64);
-        let sigma2 = resid.dot(&resid) / df;
+        if sxx == 0.0 {
+            return Err(anyhow::anyhow!(
+                "Variance of marker {} is zero; cannot fit regression",
+                marker_id
+            ));
+        }
 
-        // Var(beta) = sigma2 * (X^T X)^(-1)
-        let var_beta = xtx_inv * sigma2;
+        let beta_marker = sxy / sxx;
+        let beta0 = mean_y - beta_marker * mean_x;
 
-        // Marker effect is the last coefficient.
-        let beta_marker = beta[beta.len() - 1];
-        let var_marker = var_beta[(beta.len() - 1, beta.len() - 1)];
-        let se_marker = var_marker.sqrt();
+        // Residual sum of squares.
+        let mut sse = 0.0;
+        for (xi, yi) in encoded.iter().zip(y_slice.iter()) {
+            let y_hat = beta0 + beta_marker * xi;
+            let resid = yi - y_hat;
+            sse += resid * resid;
+        }
+
+        let df = n - 2.0; // intercept + marker
+        let sigma2 = sse / df;
+
+        // Var(beta_marker) = sigma2 / Sxx
+        let se_marker = (sigma2 / sxx).sqrt();
         let t_stat = beta_marker / se_marker;
         let dist = StudentsT::new(0.0, 1.0, df)?;
         let p_value = 2.0 * (1.0 - dist.cdf(t_stat.abs()));
@@ -148,50 +195,13 @@ fn run_lm_gwas(
 /// Encode marker under a given gene-action model.
 /// Phase 2: additive = single column of dosages.
 fn encode_marker(
-    dosage: &Array1<f64>,
+    dosage: &[f64],
     _ploidy: u8,
     model: GeneActionModel,
-) -> Result<Array2<f64>> {
+) -> Result<Vec<f64>> {
     match model {
-        GeneActionModel::Additive => {
-            // Return n×1 column.
-            let n = dosage.len();
-            let mut mat = Array2::<f64>::zeros((n, 1));
-            for (i, val) in dosage.iter().enumerate() {
-                mat[(i, 0)] = *val;
-            }
-            Ok(mat)
-        }
+        GeneActionModel::Additive => Ok(dosage.to_vec()),
     }
-}
-
-/// Horizontal stack of Array2 views.
-/// Phase 2 convenience; can be refactored later.
-fn hstack<'a>(arrays: &[ndarray::ArrayView2<'a, f64>]) -> Result<Array2<f64>> {
-    let n_rows = arrays
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("No arrays provided to hstack"))?
-        .nrows();
-
-    let total_cols: usize = arrays.iter().map(|a| a.ncols()).sum();
-
-    let mut out = Array2::<f64>::zeros((n_rows, total_cols));
-
-    let mut col_offset = 0;
-    for arr in arrays {
-        if arr.nrows() != n_rows {
-            return Err(anyhow::anyhow!(
-                "All arrays must have the same number of rows for hstack"
-            ));
-        }
-        let ncols = arr.ncols();
-        out
-            .slice_mut(s![.., col_offset..col_offset + ncols])
-            .assign(arr);
-        col_offset += ncols;
-    }
-
-    Ok(out)
 }
 
 fn write_results_tsv<P: AsRef<std::path::Path>>(
@@ -214,4 +224,47 @@ fn write_results_tsv<P: AsRef<std::path::Path>>(
     }
     wtr.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use binx_core::PhenotypeTable;
+    use ndarray::array;
+
+    #[test]
+    fn aligns_trait_to_genotypes_by_sample_id() {
+        let pheno = PhenotypeTable {
+            sample_ids: vec!["S1".into(), "S2".into(), "S3".into()],
+            traits: vec![("height".into(), array![1.0, 2.0, 3.0])].into_iter().collect(),
+            covariates: Default::default(),
+        };
+        let geno = GenotypeMatrixBiallelic {
+            ploidy: 2,
+            sample_ids: vec!["S3".into(), "S1".into(), "S2".into()],
+            marker_ids: vec!["m1".into()],
+            dosages: array![[0.0, 1.0, 2.0]],
+        };
+
+        let (aligned, order) = align_trait_to_genotypes(&pheno, "height", &geno).unwrap();
+        assert_eq!(order, geno.sample_ids);
+        assert_eq!(aligned.to_vec(), vec![3.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn lm_produces_expected_beta_and_significance() {
+        let geno = GenotypeMatrixBiallelic {
+            ploidy: 2,
+            sample_ids: vec!["S1".into(), "S2".into(), "S3".into()],
+            marker_ids: vec!["m1".into()],
+            dosages: array![[0.0, 1.0, 2.0]],
+        };
+        // Slight noise so variance is non-zero.
+        let y = array![1.0, 2.9, 6.1];
+
+        let results = run_lm_gwas(&geno, &y, GeneActionModel::Additive).unwrap();
+        let r = &results[0];
+        assert!((r.beta - 2.55).abs() < 1e-6);
+        assert!(r.p_value < 0.2); // With df=1 heavy tail; just ensure it is reasonably small.
+    }
 }

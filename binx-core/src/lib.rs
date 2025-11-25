@@ -11,8 +11,8 @@ pub type MarkerId = String;
 /// Simple phenotype table: samples × (traits + covariates).
 pub struct PhenotypeTable {
     pub sample_ids: Vec<SampleId>,
-    pub traits: HashMap<String, Array1<f64>>,      // trait_name -> y
-    pub covariates: HashMap<String, Array1<f64>>,  // cov_name -> x
+    pub traits: HashMap<String, Array1<f64>>, // trait_name -> y
+    pub covariates: HashMap<String, Array1<f64>>, // cov_name -> x
 }
 
 /// Biallelic dosage matrix: markers × samples, entries 0..ploidy.
@@ -39,6 +39,7 @@ pub struct PcMatrix {
 }
 
 /// Row type for phenotype TSV (Phase 1: flexible).
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct PhenoRow {
     #[serde(rename = "sample_id")]
@@ -51,9 +52,7 @@ struct PhenoRow {
 /// Assumes first column is sample_id, others numeric.
 pub fn load_phenotypes_from_tsv<P: AsRef<Path>>(path: P) -> Result<PhenotypeTable> {
     let file = File::open(path)?;
-    let mut rdr = csv::ReaderBuilder::new()
-        .delimiter(b'\t')
-        .from_reader(file);
+    let mut rdr = csv::ReaderBuilder::new().delimiter(b'\t').from_reader(file);
 
     let headers = rdr.headers()?.clone();
     let col_names: Vec<String> = headers.iter().map(|s| s.to_string()).collect();
@@ -75,7 +74,12 @@ pub fn load_phenotypes_from_tsv<P: AsRef<Path>>(path: P) -> Result<PhenotypeTabl
         for (i, col_name) in value_cols.iter().enumerate() {
             let val_str = record.get(i + 1).unwrap();
             let val: f64 = val_str.parse().map_err(|e| {
-                anyhow::anyhow!("Failed to parse value '{}' in column '{}': {}", val_str, col_name, e)
+                anyhow::anyhow!(
+                    "Failed to parse value '{}' in column '{}': {}",
+                    val_str,
+                    col_name,
+                    e
+                )
             })?;
             columns.get_mut(col_name).unwrap().push(val);
         }
@@ -104,20 +108,14 @@ pub fn load_genotypes_biallelic_from_tsv<P: AsRef<Path>>(
     ploidy: u8,
 ) -> Result<GenotypeMatrixBiallelic> {
     let file = File::open(path)?;
-    let mut rdr = csv::ReaderBuilder::new()
-        .delimiter(b'\t')
-        .from_reader(file);
+    let mut rdr = csv::ReaderBuilder::new().delimiter(b'\t').from_reader(file);
 
     let headers = rdr.headers()?.clone();
     let header_strings: Vec<String> = headers.iter().map(|s| s.to_string()).collect();
 
     // Assume first 3 columns are marker metadata: id, chr, pos.
     // Sample IDs start at index 3.
-    let sample_ids: Vec<SampleId> = header_strings
-        .iter()
-        .skip(3)
-        .cloned()
-        .collect();
+    let sample_ids: Vec<SampleId> = header_strings.iter().skip(3).cloned().collect();
 
     let mut marker_ids = Vec::new();
     let mut dosage_rows: Vec<Vec<f64>> = Vec::new();
@@ -161,9 +159,7 @@ pub fn load_genotypes_biallelic_from_tsv<P: AsRef<Path>>(
 /// sample_id  S1  S2  S3 ...
 pub fn load_kinship_from_tsv<P: AsRef<Path>>(path: P) -> Result<KinshipMatrix> {
     let file = File::open(path)?;
-    let mut rdr = csv::ReaderBuilder::new()
-        .delimiter(b'\t')
-        .from_reader(file);
+    let mut rdr = csv::ReaderBuilder::new().delimiter(b'\t').from_reader(file);
 
     let headers = rdr.headers()?.clone();
     let header_strings: Vec<String> = headers.iter().map(|s| s.to_string()).collect();
@@ -197,4 +193,53 @@ pub fn load_kinship_from_tsv<P: AsRef<Path>>(path: P) -> Result<KinshipMatrix> {
         sample_ids,
         matrix: mat,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::array;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn write_temp(contents: &str) -> NamedTempFile {
+        let mut file = NamedTempFile::new().expect("create temp file");
+        write!(file, "{}", contents).expect("write temp file");
+        file
+    }
+
+    #[test]
+    fn load_phenotypes_parses_numeric_columns() {
+        let contents = "sample_id\ttrait1\tcov1\nS1\t1.0\t5.0\nS2\t2.0\t6.0\n";
+        let file = write_temp(contents);
+
+        let pheno = load_phenotypes_from_tsv(file.path()).expect("load phenotypes");
+        assert_eq!(pheno.sample_ids, vec!["S1", "S2"]);
+        let trait_vals = pheno.traits.get("trait1").unwrap();
+        assert_eq!(trait_vals, &array![1.0, 2.0]);
+    }
+
+    #[test]
+    fn load_genotypes_parses_dosages() {
+        let contents = "marker_id\tchr\tpos\tS1\tS2\nm1\t1\t10\t0\t1\nm2\t1\t20\t2\t1\n";
+        let file = write_temp(contents);
+
+        let geno = load_genotypes_biallelic_from_tsv(file.path(), 2).expect("load genotypes");
+        assert_eq!(geno.sample_ids, vec!["S1", "S2"]);
+        assert_eq!(geno.marker_ids, vec!["m1", "m2"]);
+        assert_eq!(geno.dosages.shape(), &[2, 2]);
+        assert_eq!(geno.dosages[[0, 1]], 1.0);
+        assert_eq!(geno.dosages[[1, 0]], 2.0);
+    }
+
+    #[test]
+    fn load_kinship_parses_matrix() {
+        let contents = "sample_id\tS1\tS2\nS1\t1.0\t0.2\nS2\t0.2\t1.0\n";
+        let file = write_temp(contents);
+
+        let kin = load_kinship_from_tsv(file.path()).expect("load kinship");
+        assert_eq!(kin.sample_ids, vec!["S1", "S2"]);
+        assert_eq!(kin.matrix[[0, 1]], 0.2);
+        assert_eq!(kin.matrix[[1, 0]], 0.2);
+    }
 }

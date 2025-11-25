@@ -8,6 +8,6 @@ description = "Biallelic GWAS (GWASpoly-like) for binx"
 [dependencies]
 anyhow = "1"
 ndarray = "0.15"
-ndarray-linalg = { version = "0.16", features = ["openblas-static"] }
 statrs = "0.16"
 binx-core = { path = "../binx-core" }
+csv = "1.3"

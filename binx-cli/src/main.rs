@@ -95,7 +95,7 @@ fn main() -> Result<()> {
                 &pheno,
                 &trait_name,
                 &kinship,
-                pcs.as_deref(),
+                pcs.as_ref(),
                 ploidy,
                 &encoding,
                 &model,
