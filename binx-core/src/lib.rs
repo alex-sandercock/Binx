@@ -1,5 +1,6 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use ndarray::{Array1, Array2};
+use nalgebra::{DMatrix, DVector, SymmetricEigen};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs::File;
@@ -29,6 +30,207 @@ pub struct KinshipMatrix {
     pub sample_ids: Vec<SampleId>,
     /// shape: (n_samples, n_samples)
     pub matrix: Array2<f64>,
+}
+
+/// Placeholder cache for mixed-model computations (Phase 3).
+/// Will hold transformed y/X and precomputed matrices for fast per-marker GLS.
+pub struct MixedModelCache {
+    pub sample_ids: Vec<SampleId>,
+    pub u: DMatrix<f64>,
+    pub d_inv_sqrt: DVector<f64>,
+    pub y_star: DVector<f64>,
+    pub x0_star: DMatrix<f64>,
+    pub xtx_inv: DMatrix<f64>,
+    pub sigma2: f64,
+    pub lambda: f64,
+}
+
+/// Phase 3 stub: fit null mixed model y ~ X0 with kinship K.
+/// Implements a simple grid-search REML over lambda = sigma_g^2 / sigma_e^2.
+pub fn fit_null_mixed_model(
+    y: &Array1<f64>,
+    x0: &Array2<f64>,
+    kinship: &KinshipMatrix,
+) -> Result<MixedModelCache> {
+    let n = y.len();
+    if x0.nrows() != n {
+        return Err(anyhow!(
+            "X0 rows ({}) do not match y length ({})",
+            x0.nrows(),
+            n
+        ));
+    }
+    if kinship.matrix.nrows() != n || kinship.matrix.ncols() != n {
+        return Err(anyhow!(
+            "Kinship matrix must be square with size equal to sample count ({})",
+            n
+        ));
+    }
+    let p = x0.ncols();
+    if p == 0 {
+        return Err(anyhow!("X0 must have at least one column (intercept)"));
+    }
+    if n <= p {
+        return Err(anyhow!(
+            "Not enough samples (n={}) for fixed effects (p={})",
+            n,
+            p
+        ));
+    }
+
+    let y_slice = y
+        .as_slice()
+        .ok_or_else(|| anyhow!("Trait array is not contiguous"))?;
+    let x_slice = x0
+        .as_slice()
+        .ok_or_else(|| anyhow!("Design matrix is not contiguous"))?;
+    let k_slice = kinship
+        .matrix
+        .as_slice()
+        .ok_or_else(|| anyhow!("Kinship matrix is not contiguous"))?;
+
+    let y_vec = DVector::from_row_slice(y_slice);
+    let x0_mat = DMatrix::from_row_slice(n, p, x_slice);
+    let k_mat = DMatrix::from_row_slice(n, n, k_slice);
+
+    let eig = SymmetricEigen::new(k_mat);
+    let vals = eig.eigenvalues;
+    let u = eig.eigenvectors;
+    let y_t = u.transpose() * &y_vec;
+    let x_t = u.transpose() * &x0_mat;
+
+    // Grid search over log10(lambda) in [-4, 4]
+    let mut best_ll = f64::NEG_INFINITY;
+    let mut best_lambda = 0.0;
+    let mut best_sigma2 = None;
+
+    for step in 0..=32 {
+        let log10_lambda = -4.0 + (step as f64) * 0.25;
+        let lambda = 10f64.powf(log10_lambda);
+        if let Some((ll, sigma2)) = reml_loglik(lambda, &vals, &y_t, &x_t) {
+            if ll.is_finite() && ll > best_ll {
+                best_ll = ll;
+                best_lambda = lambda;
+                best_sigma2 = Some(sigma2);
+            }
+        }
+    }
+
+    let sigma2 = best_sigma2
+        .ok_or_else(|| anyhow!("Failed to optimize REML for mixed model"))?;
+
+    let (_delta, d_inv_sqrt) = build_delta_inv_sqrt(best_lambda, &vals);
+
+    // y* = D^-1/2 U^T y ; X0* = D^-1/2 U^T X0
+    let mut y_star = y_t.clone();
+    elementwise_scale_vec(&mut y_star, &d_inv_sqrt);
+
+    let mut x0_star = x_t.clone();
+    elementwise_scale_rows(&mut x0_star, &d_inv_sqrt);
+
+    let xtx = &x0_star.transpose() * &x0_star;
+    let xtx_inv = xtx
+        .try_inverse()
+        .ok_or_else(|| anyhow!("Failed to invert X0*^T X0*"))?;
+
+    Ok(MixedModelCache {
+        sample_ids: kinship.sample_ids.clone(),
+        u,
+        d_inv_sqrt,
+        y_star,
+        x0_star,
+        xtx_inv,
+        sigma2,
+        lambda: best_lambda,
+    })
+}
+
+fn build_delta_inv_sqrt(lambda: f64, vals: &DVector<f64>) -> (Vec<f64>, DVector<f64>) {
+    let mut delta = Vec::with_capacity(vals.len());
+    let mut inv_sqrt = Vec::with_capacity(vals.len());
+    for &d in vals.iter() {
+        let val = lambda * d + 1.0;
+        delta.push(val);
+        inv_sqrt.push(1.0 / val.sqrt());
+    }
+    let inv_sqrt_vec = DVector::from_row_slice(&inv_sqrt);
+    (delta, inv_sqrt_vec)
+}
+
+fn reml_loglik(
+    lambda: f64,
+    vals: &DVector<f64>,
+    y_t: &DVector<f64>,
+    x_t: &DMatrix<f64>,
+) -> Option<(f64, f64)> {
+    let n = y_t.len();
+    let p = x_t.ncols();
+    let mut delta = Vec::with_capacity(n);
+    let mut inv = Vec::with_capacity(n);
+    for &d in vals.iter() {
+        let v = lambda * d + 1.0;
+        delta.push(v);
+        inv.push(1.0 / v);
+    }
+
+    let (xt_dinv_x, xt_dinv_y, y_dinv_y) = accumulate_weighted_moments(x_t, y_t, &inv);
+    let lu = xt_dinv_x.lu();
+    if !lu.is_invertible() {
+        return None;
+    }
+    let beta = lu.solve(&xt_dinv_y)?;
+    let resid = y_dinv_y - xt_dinv_y.dot(&beta);
+    if resid <= 0.0 {
+        return None;
+    }
+    let sigma2 = resid / ((n - p) as f64);
+    if !sigma2.is_finite() || sigma2 <= 0.0 {
+        return None;
+    }
+    let logdet_xt = lu.determinant().abs().ln();
+    let logdet_delta: f64 = delta.iter().map(|v| v.ln()).sum();
+    let ll = -0.5 * (logdet_delta + logdet_xt + (n - p) as f64 * (sigma2.ln() + 1.0));
+    Some((ll, sigma2))
+}
+
+fn accumulate_weighted_moments(
+    x_t: &DMatrix<f64>,
+    y_t: &DVector<f64>,
+    inv: &[f64],
+) -> (DMatrix<f64>, DVector<f64>, f64) {
+    let n = y_t.len();
+    let p = x_t.ncols();
+    let mut xt_dinv_x = DMatrix::<f64>::zeros(p, p);
+    let mut xt_dinv_y = DVector::<f64>::zeros(p);
+    let mut y_dinv_y = 0.0;
+    for i in 0..n {
+        let w = inv[i];
+        let yv = y_t[i];
+        y_dinv_y += w * yv * yv;
+        for a in 0..p {
+            let xa = x_t[(i, a)];
+            xt_dinv_y[a] += w * xa * yv;
+            for b in 0..p {
+                xt_dinv_x[(a, b)] += w * xa * x_t[(i, b)];
+            }
+        }
+    }
+    (xt_dinv_x, xt_dinv_y, y_dinv_y)
+}
+
+fn elementwise_scale_vec(v: &mut DVector<f64>, scale: &DVector<f64>) {
+    for (val, s) in v.iter_mut().zip(scale.iter()) {
+        *val *= *s;
+    }
+}
+
+fn elementwise_scale_rows(m: &mut DMatrix<f64>, scale: &DVector<f64>) {
+    for i in 0..m.nrows() {
+        let s = scale[i];
+        for j in 0..m.ncols() {
+            m[(i, j)] *= s;
+        }
+    }
 }
 
 /// Optional PCs: samples × PCs.
@@ -74,7 +276,7 @@ pub fn load_phenotypes_from_tsv<P: AsRef<Path>>(path: P) -> Result<PhenotypeTabl
         for (i, col_name) in value_cols.iter().enumerate() {
             let val_str = record.get(i + 1).unwrap();
             let val: f64 = val_str.parse().map_err(|e| {
-                anyhow::anyhow!(
+                anyhow!(
                     "Failed to parse value '{}' in column '{}': {}",
                     val_str,
                     col_name,
@@ -129,7 +331,7 @@ pub fn load_genotypes_biallelic_from_tsv<P: AsRef<Path>>(
         for i in 3..record.len() {
             let val_str = record.get(i).unwrap();
             let val: f64 = val_str.parse().map_err(|e| {
-                anyhow::anyhow!("Failed to parse dosage '{}' at col {}: {}", val_str, i, e)
+                anyhow!("Failed to parse dosage '{}' at col {}: {}", val_str, i, e)
             })?;
             row.push(val);
         }
@@ -174,7 +376,7 @@ pub fn load_kinship_from_tsv<P: AsRef<Path>>(path: P) -> Result<KinshipMatrix> {
         for i in 1..record.len() {
             let val_str = record.get(i).unwrap();
             let val: f64 = val_str.parse().map_err(|e| {
-                anyhow::anyhow!("Failed to parse kinship value '{}': {}", val_str, e)
+                anyhow!("Failed to parse kinship value '{}': {}", val_str, e)
             })?;
             row_vals.push(val);
         }
@@ -203,7 +405,7 @@ pub fn load_pcs_from_tsv<P: AsRef<Path>>(path: P) -> Result<PcMatrix> {
 
     let headers = rdr.headers()?.clone();
     if headers.len() < 2 {
-        return Err(anyhow::anyhow!(
+        return Err(anyhow!(
             "PC file must have at least one PC column besides sample_id"
         ));
     }
@@ -217,7 +419,7 @@ pub fn load_pcs_from_tsv<P: AsRef<Path>>(path: P) -> Result<PcMatrix> {
         sample_ids.push(
             record
                 .get(0)
-                .ok_or_else(|| anyhow::anyhow!("Missing sample_id column in PC file"))?
+                .ok_or_else(|| anyhow!("Missing sample_id column in PC file"))?
                 .to_string(),
         );
 
@@ -225,7 +427,7 @@ pub fn load_pcs_from_tsv<P: AsRef<Path>>(path: P) -> Result<PcMatrix> {
         for i in 1..record.len() {
             let val_str = record.get(i).unwrap();
             let val: f64 = val_str.parse().map_err(|e| {
-                anyhow::anyhow!("Failed to parse PC value '{}' at col {}: {}", val_str, i, e)
+                anyhow!("Failed to parse PC value '{}' at col {}: {}", val_str, i, e)
             })?;
             row.push(val);
         }

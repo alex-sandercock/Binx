@@ -37,6 +37,10 @@ enum Commands {
         #[arg(long)]
         pcs: Option<String>,
 
+        /// Optional kinship matrix TSV (sample_id + samples)
+        #[arg(long)]
+        kinship: Option<String>,
+
         /// Ploidy (e.g., 2, 4, 6)
         #[arg(long)]
         ploidy: u8,
@@ -83,6 +87,7 @@ fn main() -> Result<()> {
         trait_name,
         covariates,
         pcs,
+        kinship,
         ploidy,
         model,
         out,
@@ -94,6 +99,7 @@ fn main() -> Result<()> {
             &trait_name,
             covariate_list.as_deref(),
             pcs.as_deref(),
+            kinship.as_deref(),
             ploidy,
             &model,
             &out,

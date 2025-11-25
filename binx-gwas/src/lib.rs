@@ -1,9 +1,10 @@
 use anyhow::{anyhow, Result};
 use binx_core::{
-    load_genotypes_biallelic_from_tsv, load_phenotypes_from_tsv, load_pcs_from_tsv,
-    GenotypeMatrixBiallelic,
+    fit_null_mixed_model, load_genotypes_biallelic_from_tsv, load_kinship_from_tsv,
+    load_phenotypes_from_tsv, load_pcs_from_tsv, GenotypeMatrixBiallelic, KinshipMatrix,
+    MixedModelCache,
 };
-use ndarray::{Array1, Axis};
+use ndarray::{Array1, Array2, Axis};
 use nalgebra::{DMatrix, DVector};
 use statrs::distribution::{ContinuousCDF, StudentsT};
 use std::collections::HashMap;
@@ -24,13 +25,14 @@ pub struct MarkerResult {
 }
 
 /// Top-level entry point used by the CLI.
-/// Phase 2: simple linear model GWAS with optional covariates/PCs, no K yet.
+/// Supports LM (default) and will use LMM when --kinship is provided.
 pub fn run_gwas(
     geno_path: &str,
     pheno_path: &str,
     trait_name: &str,
     covariate_names: Option<&[String]>,
     pcs_path: Option<&str>,
+    kinship_path: Option<&str>,
     ploidy: u8,
     model_str: &str,
     out_path: &str,
@@ -53,6 +55,16 @@ pub fn run_gwas(
 
     // Build base design: intercept + covariates + PCs (all aligned to genotype order).
     let base_design = build_base_design(&pheno, covariate_names, pcs_path, &geno, &pheno_to_geno)?;
+
+    if let Some(k_path) = kinship_path {
+        let kin = load_kinship(k_path)?;
+        let kin_aligned = align_kinship_to_genotypes(kin, &geno.sample_ids)?;
+        let x0_array = base_design_to_array2(&base_design)?;
+        let cache = fit_null_mixed_model(&y, &x0_array, &kin_aligned)?;
+        let results = run_lmm_gwas(&geno, &cache, model)?;
+        write_results_tsv(out_path, &results)?;
+        return Ok(());
+    }
 
     // Run LM-based GWAS.
     let results = run_lm_gwas(&geno, &y, &base_design, model)?;
@@ -170,6 +182,47 @@ fn build_base_design(
     Ok(cols)
 }
 
+fn base_design_to_array2(cols: &[Vec<f64>]) -> Result<Array2<f64>> {
+    if cols.is_empty() {
+        return Err(anyhow!("Base design must have at least one column (intercept)"));
+    }
+    let n_samples = cols[0].len();
+    let p = cols.len();
+    let mut mat = Array2::<f64>::zeros((n_samples, p));
+    for (j, col) in cols.iter().enumerate() {
+        if col.len() != n_samples {
+            return Err(anyhow!(
+                "Design column {} length {} does not match samples {}",
+                j,
+                col.len(),
+                n_samples
+            ));
+        }
+        for (i, val) in col.iter().enumerate() {
+            mat[(i, j)] = *val;
+        }
+    }
+    Ok(mat)
+}
+
+fn align_kinship_to_genotypes(
+    kin: KinshipMatrix,
+    geno_ids: &[String],
+) -> Result<KinshipMatrix> {
+    let map = build_alignment_index(&kin.sample_ids, geno_ids)?;
+    let n = geno_ids.len();
+    let mut matrix = Array2::<f64>::zeros((n, n));
+    for (i_new, &i_old) in map.iter().enumerate() {
+        for (j_new, &j_old) in map.iter().enumerate() {
+            matrix[(i_new, j_new)] = kin.matrix[(i_old, j_old)];
+        }
+    }
+    Ok(KinshipMatrix {
+        sample_ids: geno_ids.to_vec(),
+        matrix,
+    })
+}
+
 /// LM GWAS with arbitrary covariates/PCs: y ~ intercept + covs + marker.
 fn run_lm_gwas(
     geno: &GenotypeMatrixBiallelic,
@@ -265,6 +318,98 @@ fn run_lm_gwas(
     Ok(results)
 }
 
+/// LMM GWAS using pre-fit null model cache.
+fn run_lmm_gwas(
+    geno: &GenotypeMatrixBiallelic,
+    cache: &MixedModelCache,
+    model: GeneActionModel,
+) -> Result<Vec<MarkerResult>> {
+    let n_samples = geno.sample_ids.len();
+    let n_markers = geno.marker_ids.len();
+    let p0 = cache.x0_star.ncols();
+
+    if cache.sample_ids != geno.sample_ids {
+        return Err(anyhow!(
+            "Kinship sample IDs do not match genotype order after alignment"
+        ));
+    }
+
+    let mut results = Vec::with_capacity(n_markers);
+
+    for (marker_idx, marker_id) in geno.marker_ids.iter().enumerate() {
+        let dosage = geno.dosages.index_axis(Axis(0), marker_idx).to_owned();
+        let x_marker = encode_marker(&dosage, geno.ploidy, model)?;
+
+        // Transform marker: x* = D^-1/2 U^T x
+        let x_vec = DVector::from_row_slice(&x_marker);
+        let x_t = cache.u.transpose() * x_vec;
+        let mut x_star_vec = x_t.clone();
+        for (xi, s) in x_star_vec.iter_mut().zip(cache.d_inv_sqrt.iter()) {
+            *xi *= *s;
+        }
+
+        // Build design matrix X* = [X0* | x*]
+        let p = p0 + 1;
+        let mut data = Vec::with_capacity(n_samples * p);
+        for row in 0..n_samples {
+            for col in 0..p0 {
+                data.push(cache.x0_star[(row, col)]);
+            }
+            data.push(x_star_vec[row]);
+        }
+        let x = DMatrix::from_row_slice(n_samples, p, &data);
+
+        let xtx = &x.transpose() * &x;
+        let xty = &x.transpose() * &cache.y_star;
+        let lu = xtx.lu();
+        let beta = match lu.solve(&xty) {
+            Some(b) => b,
+            None => {
+                return Err(anyhow!("Singular design matrix (LMM) for marker {}", marker_id));
+            }
+        };
+        let xtx_inv = match lu.try_inverse() {
+            Some(inv) => inv,
+            None => {
+                return Err(anyhow!("Failed to invert X^T X (LMM) for marker {}", marker_id));
+            }
+        };
+
+        let y_hat = &x * &beta;
+        let resid = &cache.y_star - y_hat;
+        let df = (n_samples as f64) - (p as f64);
+        if df <= 0.0 {
+            return Err(anyhow!(
+                "Degrees of freedom <= 0 in LMM (n_samples={}, p={})",
+                n_samples,
+                p
+            ));
+        }
+        let sigma2 = resid.dot(&resid) / df;
+
+        let se_marker = (sigma2 * xtx_inv[(p - 1, p - 1)]).sqrt();
+        let beta_marker = beta[p - 1];
+        let (t_stat, p_value) = if se_marker == 0.0 {
+            (0.0, 1.0)
+        } else {
+            let t = beta_marker / se_marker;
+            let dist = StudentsT::new(0.0, 1.0, df)?;
+            let p = 2.0 * (1.0 - dist.cdf(t.abs()));
+            (t, p)
+        };
+
+        results.push(MarkerResult {
+            marker_id: marker_id.clone(),
+            beta: beta_marker,
+            se: se_marker,
+            t_stat,
+            p_value,
+        });
+    }
+
+    Ok(results)
+}
+
 /// Encode marker under a given gene-action model.
 /// Phase 2: additive = single column of dosages.
 fn encode_marker(
@@ -299,10 +444,15 @@ fn write_results_tsv(
     Ok(())
 }
 
+fn load_kinship(path: &str) -> Result<KinshipMatrix> {
+    let kin = load_kinship_from_tsv(path)?;
+    Ok(kin)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use binx_core::PhenotypeTable;
+    use binx_core::{KinshipMatrix, PhenotypeTable};
     use ndarray::array;
 
     #[test]
@@ -358,5 +508,30 @@ mod tests {
         let r = &results[0];
         assert!(r.beta.abs() < 1e-8);
         assert!(r.p_value > 0.9);
+    }
+
+    #[test]
+    fn lmm_matches_lm_when_kinship_is_identity() {
+        let geno = GenotypeMatrixBiallelic {
+            ploidy: 2,
+            sample_ids: vec!["S1".into(), "S2".into(), "S3".into()],
+            marker_ids: vec!["m1".into()],
+            dosages: array![[0.0, 1.0, 2.0]],
+        };
+        let y = array![1.0, 2.9, 6.1];
+        let base_cols = vec![vec![1.0; 3]]; // intercept only
+        let x0 = base_design_to_array2(&base_cols).unwrap();
+        let kin = KinshipMatrix {
+            sample_ids: geno.sample_ids.clone(),
+            matrix: array![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        };
+        let cache = fit_null_mixed_model(&y, &x0, &kin).unwrap();
+
+        let lm = run_lm_gwas(&geno, &y, &base_cols, GeneActionModel::Additive).unwrap();
+        let lmm = run_lmm_gwas(&geno, &cache, GeneActionModel::Additive).unwrap();
+        let lm_res = &lm[0];
+        let lmm_res = &lmm[0];
+        assert!((lm_res.beta - lmm_res.beta).abs() < 1e-6);
+        assert!((lm_res.se - lmm_res.se).abs() < 1e-6);
     }
 }
