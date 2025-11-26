@@ -7,7 +7,7 @@ use binx_core::{
 use binx_kinship::compute_kinship_vanraden;
 use ndarray::{Array1, Array2, Axis};
 use nalgebra::{DMatrix, DVector};
-use statrs::distribution::{ContinuousCDF, StudentsT};
+use statrs::distribution::{ContinuousCDF, FisherSnedecor, StudentsT};
 use std::collections::{HashMap, HashSet};
 
 /// Gene action models (Phase 2: only additive is implemented).
@@ -123,7 +123,8 @@ pub fn run_gwas(
             let x0_array = base_design_to_array2(&base_design)?;
             let cache =
                 fit_null_mixed_model(&y, &x0_array, &kin, Some(&z_mat), Some(&geno_obs.sample_ids))?;
-            let results = run_lmm_score_gwas(&geno_obs, &y, &base_design, &cache, model)?;
+            let results =
+                run_lmm_score_gwas(&geno_obs, Some(&geno_subset), &y, &base_design, &cache, model)?;
             write_results_tsv(out_path, &results)?;
         } else {
             let results = run_lm_gwas(&geno_obs, &y, &base_design, model)?;
@@ -156,7 +157,7 @@ pub fn run_gwas(
             let kin_aligned = align_kinship_to_genotypes(kin, &geno.sample_ids)?;
             let x0_array = base_design_to_array2(&base_design)?;
             let cache = fit_null_mixed_model(&y, &x0_array, &kin_aligned, None, None)?;
-            let results = run_lmm_score_gwas(&geno, &y, &base_design, &cache, model)?;
+            let results = run_lmm_score_gwas(&geno, None, &y, &base_design, &cache, model)?;
             write_results_tsv(out_path, &results)?;
         } else {
             // Run LM-based GWAS.
@@ -720,6 +721,7 @@ fn passes_marker_qc(dosage: &Array1<f64>, ploidy: u8, n_geno: usize, min_maf: f6
 
 fn run_lmm_score_gwas(
     geno: &GenotypeMatrixBiallelic,
+    qc_geno: Option<&GenotypeMatrixBiallelic>,
     y: &Array1<f64>,
     base_design_cols: &[Vec<f64>],
     cache: &MixedModelCache,
@@ -728,7 +730,9 @@ fn run_lmm_score_gwas(
     let n_samples = geno.sample_ids.len();
     let n_markers = geno.marker_ids.len();
     let p0 = base_design_cols.len();
-    let n_geno_qc = cache.n_ind.max(1);
+
+    let qc_source = qc_geno.unwrap_or(geno);
+    let n_geno_qc = qc_source.sample_ids.len().max(1);
     let max_geno_freq_default = 1.0 - 5.0 / (n_geno_qc as f64);
     let min_maf_default = 0.0;
 
@@ -752,12 +756,16 @@ fn run_lmm_score_gwas(
 
     for (marker_idx, marker_id) in geno.marker_ids.iter().enumerate() {
         let dosage = geno.dosages.index_axis(Axis(0), marker_idx).to_owned();
+        let qc_dosage = qc_source
+            .dosages
+            .index_axis(Axis(0), marker_idx)
+            .to_owned();
         let x_marker = encode_marker(&dosage, geno.ploidy, model)?;
 
         // QC filters (approximate GWASpoly defaults).
         if !passes_marker_qc(
-            &dosage,
-            geno.ploidy,
+            &qc_dosage,
+            qc_source.ploidy,
             n_geno_qc,
             min_maf_default,
             max_geno_freq_default,
@@ -776,11 +784,20 @@ fn run_lmm_score_gwas(
         }
         let x = DMatrix::from_row_slice(n_samples, p, &data);
 
-        // W = X^T Hinv X
+        // W = X^T Hinv X (add tiny jitter if near-singular to mirror R's solve robustness)
         let w = &x.transpose() * h_inv * &x;
-        let w_inv = match w.try_inverse() {
+        let w_inv = match w.clone().try_inverse() {
             Some(inv) => inv,
-            None => continue, // skip singular
+            None => {
+                let mut w_eps = w.clone();
+                for i in 0..p {
+                    w_eps[(i, i)] += 1e-8;
+                }
+                match w_eps.try_inverse() {
+                    Some(inv) => inv,
+                    None => continue,
+                }
+            }
         };
         let beta = w_inv.clone() * (&x.transpose() * h_inv * &y_vec);
         let resid = &y_vec - &x * &beta;
@@ -798,11 +815,10 @@ fn run_lmm_score_gwas(
         } else {
             0.0
         };
-        let v1 = 1.0;
-        let x_val = v2 / (v2 + v1 * fstat);
-        let p_value = if x_val.is_finite() && x_val >= 0.0 && x_val <= 1.0 {
-            let beta_dist = statrs::distribution::Beta::new(v2 / 2.0, v1 / 2.0)?;
-            1.0 - beta_dist.cdf(x_val)
+        let v1 = (p - p0) as f64;
+        let p_value = if fstat.is_finite() {
+            let f_dist = FisherSnedecor::new(v1, v2)?;
+            (1.0 - f_dist.cdf(fstat)).max(0.0)
         } else {
             1.0
         };
