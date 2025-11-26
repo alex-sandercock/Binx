@@ -1,0 +1,10 @@
+[workspace]
+members = [
+    "binx-core",
+    "binx-gwas",
+    "binx-multigwas",
+    "binx-kinship",
+    "binx-cli",
+]
+
+resolver = "2"

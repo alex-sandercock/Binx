@@ -1,0 +1,13 @@
+[package]
+name = "binx-cli"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "CLI frontend for the binx genomic analysis toolkit"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+binx-gwas = { path = "../binx-gwas" }
+binx-multigwas = { path = "../binx-multigwas" }
+binx-kinship = { path = "../binx-kinship" }
