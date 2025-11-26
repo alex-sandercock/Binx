@@ -37,7 +37,9 @@ pub struct KinshipMatrix {
 /// Placeholder cache for mixed-model computations (Phase 3).
 /// Will hold transformed y/X and precomputed matrices for fast per-marker GLS.
 pub struct MixedModelCache {
-    pub sample_ids: Vec<SampleId>,
+    pub sample_ids: Vec<SampleId>, // matches y length (obs-level if Z provided)
+    pub n_obs: usize,
+    pub n_ind: usize,
     pub u: DMatrix<f64>,
     pub d_inv_sqrt: DVector<f64>,
     pub y_star: DVector<f64>,
@@ -53,29 +55,25 @@ pub fn fit_null_mixed_model(
     y: &Array1<f64>,
     x0: &Array2<f64>,
     kinship: &KinshipMatrix,
+    z: Option<&Array2<f64>>, // optional incidence matrix (n_obs x n_ind). If provided, y/x0 are n_obs-long.
+    obs_ids: Option<&[SampleId]>,
 ) -> Result<MixedModelCache> {
-    let n = y.len();
-    if x0.nrows() != n {
+    let n_obs = y.len();
+    let p = x0.ncols();
+    if x0.nrows() != n_obs {
         return Err(anyhow!(
             "X0 rows ({}) do not match y length ({})",
             x0.nrows(),
-            n
+            n_obs
         ));
     }
-    if kinship.matrix.nrows() != n || kinship.matrix.ncols() != n {
-        return Err(anyhow!(
-            "Kinship matrix must be square with size equal to sample count ({})",
-            n
-        ));
-    }
-    let p = x0.ncols();
     if p == 0 {
         return Err(anyhow!("X0 must have at least one column (intercept)"));
     }
-    if n <= p {
+    if n_obs <= p {
         return Err(anyhow!(
-            "Not enough samples (n={}) for fixed effects (p={})",
-            n,
+            "Not enough samples (n_obs={}) for fixed effects (p={})",
+            n_obs,
             p
         ));
     }
@@ -86,47 +84,130 @@ pub fn fit_null_mixed_model(
     let x_slice = x0
         .as_slice()
         .ok_or_else(|| anyhow!("Design matrix is not contiguous"))?;
-    let k_slice = kinship
-        .matrix
-        .as_slice()
-        .ok_or_else(|| anyhow!("Kinship matrix is not contiguous"))?;
-
     let y_vec = DVector::from_row_slice(y_slice);
-    let x0_mat = DMatrix::from_row_slice(n, p, x_slice);
-    let k_mat = DMatrix::from_row_slice(n, n, k_slice);
+    let x0_mat = DMatrix::from_row_slice(n_obs, p, x_slice);
 
-    let eig = SymmetricEigen::new(k_mat);
-    let vals = eig.eigenvalues;
-    let u = eig.eigenvectors;
-    let y_t = u.transpose() * &y_vec;
-    let x_t = u.transpose() * &x0_mat;
+    // rrBLUP-style spectral decomposition on Hb = Z K Z^T (+ offset * I).
+    let n_ind = kinship.matrix.nrows();
+    if kinship.matrix.ncols() != n_ind {
+        return Err(anyhow!("Kinship matrix must be square"));
+    }
+    let k_mat = DMatrix::from_row_slice(n_ind, n_ind, kinship.matrix.as_slice().unwrap());
+    let z_mat = if let Some(z) = z {
+        if z.ncols() != n_ind {
+            return Err(anyhow!(
+                "Z columns ({}) do not match kinship size ({})",
+                z.ncols(),
+                n_ind
+            ));
+        }
+        if z.nrows() != n_obs {
+            return Err(anyhow!(
+                "Z rows ({}) do not match observation count ({})",
+                z.nrows(),
+                n_obs
+            ));
+        }
+        DMatrix::from_row_slice(z.nrows(), z.ncols(), z.as_slice().unwrap())
+    } else {
+        // Identity incidence (n_obs must equal n_ind)
+        if n_ind != n_obs {
+            return Err(anyhow!(
+                "Kinship size ({}) does not match sample count ({})",
+                n_ind,
+                n_obs
+            ));
+        }
+        DMatrix::identity(n_obs, n_ind)
+    };
 
-    // Grid search over log10(lambda) in [-4, 4]
-    let mut best_ll = f64::NEG_INFINITY;
-    let mut best_lambda = 0.0;
-    let mut best_sigma2 = None;
+    let offset = (n_obs as f64).sqrt();
+    let hb = {
+        let zk = &z_mat * &k_mat;
+        let mut h = &zk * z_mat.transpose();
+        for i in 0..n_obs {
+            h[(i, i)] += offset;
+        }
+        h
+    };
+    let hb_eig = SymmetricEigen::new(hb);
+    let eigenvectors = hb_eig.eigenvectors.clone();
+    let phi: Vec<f64> = hb_eig
+        .eigenvalues
+        .iter()
+        .map(|v| *v - offset)
+        .collect();
+    if phi.iter().cloned().fold(f64::INFINITY, f64::min) < -1e-6 {
+        return Err(anyhow!("K not positive semi-definite (phi < 0)"));
+    }
+    let u = eigenvectors.clone();
 
-    for step in 0..=32 {
-        let log10_lambda = -4.0 + (step as f64) * 0.25;
+    // Projection matrix S = I - X (X'X)^{-1} X'
+    let xtx = &x0_mat.transpose() * &x0_mat;
+    let xtx_inv = xtx
+        .try_inverse()
+        .ok_or_else(|| anyhow!("X0 not full rank"))?;
+    let proj = {
+        let n = n_obs;
+        let i = DMatrix::<f64>::identity(n, n);
+        i - &x0_mat * (&xtx_inv * x0_mat.transpose())
+    };
+
+    let shbs = &proj * eigenvectors * DMatrix::from_diagonal(&hb_eig.eigenvalues)
+        * proj.transpose();
+    let shbs_eig = SymmetricEigen::new(shbs);
+    let theta_full: Vec<f64> = shbs_eig
+        .eigenvalues
+        .iter()
+        .map(|v| *v - offset)
+        .collect();
+    let n_theta = n_obs - p;
+    let theta: Vec<f64> = theta_full.iter().take(n_theta).cloned().collect();
+    let q = shbs_eig.eigenvectors.columns(0, n_theta).into_owned();
+    let omega = q.transpose() * &y_vec;
+    let omega_sq: Vec<f64> = omega.iter().map(|v| v * v).collect();
+
+    // Optimize REML over lambda using a coarse grid over log10 in [-8, 8].
+    let mut best_ll = f64::INFINITY;
+    let mut best_lambda = 1.0;
+    for step in 0..=64 {
+        let log10_lambda = -8.0 + (step as f64) * (16.0 / 64.0);
         let lambda = 10f64.powf(log10_lambda);
-        if let Some((ll, sigma2)) = reml_loglik(lambda, &vals, &y_t, &x_t) {
-            if ll.is_finite() && ll > best_ll {
-                best_ll = ll;
-                best_lambda = lambda;
-                best_sigma2 = Some(sigma2);
-            }
+        let denom: f64 = omega_sq
+            .iter()
+            .zip(theta.iter())
+            .map(|(o, t)| o / (t + lambda))
+            .sum();
+        if denom <= 0.0 {
+            continue;
+        }
+        let ll = (n_obs - p) as f64 * (denom.ln())
+            + theta.iter().map(|t| (t + lambda).ln()).sum::<f64>();
+        if ll < best_ll {
+            best_ll = ll;
+            best_lambda = lambda;
         }
     }
+    let lambda_opt = best_lambda;
+    let vu = omega_sq
+        .iter()
+        .zip(theta.iter())
+        .map(|(o, t)| o / (t + lambda_opt))
+        .sum::<f64>()
+        / ((n_obs - p) as f64);
+    let _ve = lambda_opt * vu;
 
-    let sigma2 = best_sigma2
-        .ok_or_else(|| anyhow!("Failed to optimize REML for mixed model"))?;
-
-    let (_delta, d_inv_sqrt) = build_delta_inv_sqrt(best_lambda, &vals);
-
-    // y* = D^-1/2 U^T y ; X0* = D^-1/2 U^T X0
+    // Build transforms using phi (length n_obs).
+    let phi_plus: Vec<f64> = phi.iter().map(|v| v + lambda_opt).collect();
+    let d_inv_sqrt = DVector::from_iterator(
+        phi_plus.len(),
+        phi_plus.iter().map(|v| 1.0 / v.sqrt()),
+    );
+    let y_t = u.transpose() * &y_vec;
     let mut y_star = y_t.clone();
     elementwise_scale_vec(&mut y_star, &d_inv_sqrt);
 
+    let x_t = u.transpose() * &x0_mat;
     let mut x0_star = x_t.clone();
     elementwise_scale_rows(&mut x0_star, &d_inv_sqrt);
 
@@ -135,14 +216,22 @@ pub fn fit_null_mixed_model(
         .try_inverse()
         .ok_or_else(|| anyhow!("Failed to invert X0*^T X0*"))?;
 
+    let cache_sample_ids = if let Some(ids) = obs_ids {
+        ids.to_vec()
+    } else {
+        kinship.sample_ids.clone()
+    };
+
     Ok(MixedModelCache {
-        sample_ids: kinship.sample_ids.clone(),
+        sample_ids: cache_sample_ids,
+        n_obs,
+        n_ind,
         u,
         d_inv_sqrt,
         y_star,
         x0_star,
         xtx_inv,
-        sigma2,
+        sigma2: lambda_opt * vu,
         lambda: best_lambda,
     })
 }

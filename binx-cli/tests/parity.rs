@@ -219,24 +219,25 @@ fn parity_potato_additive_env() -> Result<()> {
         return Ok(());
     }
 
-    // Skip until binx-gwas supports repeated IDs / env fixed effects parity.
+    // Skip until the potato parity run is stable/performance-tested.
     if std::env::var("BINX_PARITY_POTATO")
         .map(|v| v == "1" || v == "true")
         .unwrap_or(false)
         == false
     {
-        eprintln!("Skipping potato parity (set BINX_PARITY_POTATO=1 to enable; requires repeated-ID support)");
+        eprintln!("Skipping potato parity (set BINX_PARITY_POTATO=1 to enable)");
         return Ok(());
     }
 
     let geno = repo_path("tests/parity/data/potato/new_potato_geno.csv");
     let pheno = repo_path("tests/parity/data/potato/new_potato_pheno.csv");
+    let kin = repo_path("tests/parity/data/potato/new_potato_kinship.tsv");
     let reference = repo_path("tests/parity/fixtures/potato_additive_env.tsv");
     if !ensure_fixture(&reference) {
         return Ok(());
     }
-    if !geno.exists() || !pheno.exists() {
-        eprintln!("Skipping potato parity: missing geno/pheno fixtures");
+    if !geno.exists() || !pheno.exists() || !kin.exists() {
+        eprintln!("Skipping potato parity: missing geno/pheno/kinship fixtures");
         return Ok(());
     }
 
@@ -253,8 +254,11 @@ fn parity_potato_additive_env() -> Result<()> {
             "vine.maturity",
             "--covariates",
             "env",
+            "--kinship",
+            kin.to_str().unwrap(),
             "--model",
             "additive",
+            "--allow-missing-samples",
         ],
         outfile.path(),
     )?;

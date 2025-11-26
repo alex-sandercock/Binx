@@ -51,8 +51,40 @@ pub fn run_gwas(
 
     if has_dups {
         // Observation-level path: allow repeated phenotype IDs. Replicate genotypes/kinship for each observation.
-        let (geno_obs, obs_to_geno) =
-            expand_genotypes_for_observations(&geno, &pheno.sample_ids, allow_missing_samples)?;
+        // First, subset genotypes to unique phenotype IDs (order preserved from geno).
+        let mut seen = HashSet::new();
+        let mut unique_pheno_ids = Vec::new();
+        for id in &pheno.sample_ids {
+            if seen.insert(id) {
+                unique_pheno_ids.push(id.clone());
+            }
+        }
+        let geno_set: HashSet<&str> = geno.sample_ids.iter().map(|s| s.as_str()).collect();
+        let missing: Vec<String> = unique_pheno_ids
+            .iter()
+            .filter(|id| !geno_set.contains(id.as_str()))
+            .cloned()
+            .collect();
+        if !missing.is_empty() && !allow_missing_samples {
+            return Err(anyhow!(
+                "Missing genotype rows for sample_ids: {}",
+                missing.join(", ")
+            ));
+        }
+        let pheno_set: HashSet<&str> = unique_pheno_ids.iter().map(|s| s.as_str()).collect();
+        let keep_indices: Vec<usize> = geno
+            .sample_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(i, sid)| if pheno_set.contains(sid.as_str()) { Some(i) } else { None })
+            .collect();
+        let geno_subset = subset_genotypes(&geno, &keep_indices)?;
+
+        let (geno_obs, obs_to_geno) = expand_genotypes_for_observations(
+            &geno_subset,
+            &pheno.sample_ids,
+            allow_missing_samples,
+        )?;
         let y = pheno
             .traits
             .get(trait_name)
@@ -76,24 +108,21 @@ pub fn run_gwas(
         // Kinship: expand to observation-level if provided, otherwise compute from genotypes.
         let kin_obs = if let Some(k_path) = kinship_path {
             let kin = load_kinship(k_path)?;
-            let kin_aligned = align_kinship_to_genotypes(kin, &geno.sample_ids)?;
-            Some(expand_kinship_for_observations(
-                &kin_aligned,
-                &obs_to_geno,
-                &geno_obs.sample_ids,
-            )?)
+            let kin_aligned = align_kinship_to_genotypes(kin, &geno_subset.sample_ids)?;
+            Some(kin_aligned)
         } else {
-            let kin_geno = compute_kinship_vanraden(&geno)?;
-            Some(expand_kinship_for_observations(
-                &kin_geno,
-                &obs_to_geno,
-                &geno_obs.sample_ids,
-            )?)
+            Some(compute_kinship_vanraden(&geno_subset)?)
         };
 
         if let Some(kin) = kin_obs {
+            // Build incidence matrix Z: obs x individuals (subset order).
+            let mut z_mat = Array2::<f64>::zeros((geno_obs.sample_ids.len(), geno_subset.sample_ids.len()));
+            for (obs_row, &g_idx) in obs_to_geno.iter().enumerate() {
+                z_mat[(obs_row, g_idx)] = 1.0;
+            }
             let x0_array = base_design_to_array2(&base_design)?;
-            let cache = fit_null_mixed_model(&y, &x0_array, &kin)?;
+            let cache =
+                fit_null_mixed_model(&y, &x0_array, &kin, Some(&z_mat), Some(&geno_obs.sample_ids))?;
             let results = run_lmm_gwas(&geno_obs, &cache, model)?;
             write_results_tsv(out_path, &results)?;
         } else {
@@ -126,7 +155,7 @@ pub fn run_gwas(
             let kin = load_kinship(k_path)?;
             let kin_aligned = align_kinship_to_genotypes(kin, &geno.sample_ids)?;
             let x0_array = base_design_to_array2(&base_design)?;
-            let cache = fit_null_mixed_model(&y, &x0_array, &kin_aligned)?;
+            let cache = fit_null_mixed_model(&y, &x0_array, &kin_aligned, None, None)?;
             let results = run_lmm_gwas(&geno, &cache, model)?;
             write_results_tsv(out_path, &results)?;
         } else {
@@ -366,14 +395,23 @@ fn build_base_design(
                 };
                 cols.push(aligned);
             } else if let Some(fvals) = pheno.factor_covariates.get(name) {
-                // Factor covariate: dummy-code with reference level dropped (alphabetical order)
-                let values: Vec<String> = match pheno_to_geno {
-                    Some(idx) => idx.iter().map(|&i| fvals[i].clone()).collect(),
-                    None => fvals.clone(),
-                };
-                let mut levels: Vec<String> = values.iter().cloned().collect();
-                levels.sort();
-                levels.dedup();
+            // Factor covariate: dummy-code with reference level dropped (alphabetical order)
+            let values: Vec<String> = match pheno_to_geno {
+                Some(idx) => idx.iter().map(|&i| fvals[i].clone()).collect(),
+                None => fvals.clone(),
+            };
+            // If length mismatches samples, bail early.
+            if values.len() != n_samples {
+                return Err(anyhow!(
+                    "Factor covariate '{}' length {} does not match samples {}",
+                    name,
+                    values.len(),
+                    n_samples
+                ));
+            }
+            let mut levels: Vec<String> = values.iter().cloned().collect();
+            levels.sort();
+            levels.dedup();
                 if levels.len() > 1 {
                     for level in levels.iter().skip(1) {
                         let mut col = Vec::with_capacity(n_samples);
@@ -776,7 +814,7 @@ mod tests {
             sample_ids: geno.sample_ids.clone(),
             matrix: array![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         };
-        let cache = fit_null_mixed_model(&y, &x0, &kin).unwrap();
+        let cache = fit_null_mixed_model(&y, &x0, &kin, None, None).unwrap();
 
         let lm = run_lm_gwas(&geno, &y, &base_cols, GeneActionModel::Additive).unwrap();
         let lmm = run_lmm_gwas(&geno, &cache, GeneActionModel::Additive).unwrap();

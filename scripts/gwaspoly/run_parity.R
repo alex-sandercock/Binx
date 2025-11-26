@@ -34,13 +34,15 @@ parse_args <- function() {
     out = NULL,
     models = "additive",
     kinship = NULL,
+    kinship_out = NULL,
     fixed = NULL,
     fixed_type = NULL,
     format = "numeric",
     n_traits = 1,
     delim = "",
     min_maf = NA,
-    max_missing = NA
+    max_missing = NA,
+    kinship_out = NULL
   )
   for (a in raw) {
     if (!grepl("^--", a)) next
@@ -98,6 +100,23 @@ main <- function() {
   } else {
     message("Computing kinship via set.K")
     gwas <- set.K(gwas, LOCO = FALSE)
+  }
+
+  # Optionally write kinship matrix to file for reuse in parity tests
+  if (!is.null(args$kinship_out) && args$kinship_out != "") {
+    message("Writing kinship to ", args$kinship_out)
+    dir.create(dirname(args$kinship_out), showWarnings = FALSE, recursive = TRUE)
+    # gwas@K is a list (length 1 when LOCO=FALSE)
+    k_mat <- gwas@K[[1]]
+    sid <- rownames(k_mat)
+    if (is.null(sid)) {
+      sid <- colnames(k_mat)
+    }
+    if (is.null(sid)) {
+      stop("Kinship matrix missing row/column names; cannot write kinship_out")
+    }
+    kin_df <- data.frame(sample_id = sid, k_mat, check.names = FALSE)
+    write.table(kin_df, file = args$kinship_out, sep = "\t", quote = FALSE, row.names = FALSE)
   }
 
   # Parameters (mirrors GWASpoly defaults; min_maf and max_missing are hooks if we need to tweak)
