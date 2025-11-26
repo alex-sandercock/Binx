@@ -47,6 +47,8 @@ pub struct MixedModelCache {
     pub xtx_inv: DMatrix<f64>,
     pub sigma2: f64,
     pub lambda: f64,
+    pub vu: f64,
+    pub ve: f64,
 }
 
 /// Fit null mixed model y ~ X0 with kinship K, rrBLUP-style spectral REML.
@@ -113,64 +115,142 @@ pub fn fit_null_mixed_model(
     } else {
         if n_ind != n_obs {
             return Err(anyhow!(
-                "Kinship size ({}) does not match sample count ({})",
-                n_ind,
-                n_obs
-            ));
-        }
+            "Kinship size ({}) does not match sample count ({})",
+            n_ind,
+            n_obs
+        ));
+    }
         DMatrix::identity(n_obs, n_ind)
     };
 
-    // Hb = Z K Z^T + offset * I (offset stabilizes eigen).
-    let offset = (n_obs as f64).sqrt();
-    let k_mat = DMatrix::from_row_slice(n_ind, n_ind, kinship.matrix.as_slice().unwrap());
-    let hb = {
-        let zk = &z_mat * &k_mat;
-        let mut h = &zk * z_mat.transpose();
-        for i in 0..n_obs {
-            h[(i, i)] += offset;
-        }
-        h
-    };
-    // Projection matrix S = I - X (X'X)^{-1} X'
+    // rrBLUP::mixed.solve eigen branch (used for REML/P3D and as fallback when Cholesky path fails)
     let xtx = &x0_mat.transpose() * &x0_mat;
     let xtx_inv = xtx
         .try_inverse()
         .ok_or_else(|| anyhow!("X0 not full rank"))?;
-    let proj = {
+    let s_mat = {
         let i = DMatrix::<f64>::identity(n_obs, n_obs);
         i - &x0_mat * (&xtx_inv * x0_mat.transpose())
     };
 
-    // SHbS eigen to get theta/Q (projected space).
-    let shbs = &proj * &hb * proj.transpose();
-    let shbs_eig = SymmetricEigen::new(shbs);
-
-    let hb_eig = SymmetricEigen::new(hb);
-    let eigenvectors = hb_eig.eigenvectors.clone();
-    let phi: Vec<f64> = hb_eig
-        .eigenvalues
-        .iter()
-        .map(|v| *v - offset)
-        .collect();
-    if phi.iter().cloned().fold(f64::INFINITY, f64::min) < -1e-6 {
-        return Err(anyhow!("K not positive semi-definite (phi < 0)"));
+    let k_mat = DMatrix::from_row_slice(n_ind, n_ind, kinship.matrix.as_slice().unwrap());
+    // Only consider the Cholesky/SVD path when Z is identity (z is None) to avoid mismatches from repeated IDs.
+    let mut use_cholesky = false;
+    let mut k_chol_mat = k_mat.clone();
+    if z.is_none() && n_obs > n_ind + p {
+        for i in 0..n_ind {
+            k_chol_mat[(i, i)] += 1e-6;
+        }
+        if k_chol_mat.clone().cholesky().is_some() {
+            use_cholesky = true;
+        }
     }
-    let u = eigenvectors.clone();
 
-    // SHbS eigen to get theta/Q (projected space).
-    let n_theta = n_obs.saturating_sub(p);
-    let theta: Vec<f64> = shbs_eig
-        .eigenvalues
-        .iter()
-        .take(n_theta)
-        .map(|v| *v - offset)
-        .collect();
-    let q = shbs_eig.eigenvectors.columns(0, n_theta).into_owned();
+    let (phi, theta, u, q, _offset) = if use_cholesky {
+        // rrBLUP cholesky/SVD path: phi from svd(ZBt), theta from svd(SZBt) with QR to drop X cols.
+        let zbt = {
+            if n_ind == 0 {
+                DMatrix::<f64>::zeros(n_obs, 0)
+            } else {
+                let chol = k_chol_mat
+                    .cholesky()
+                    .ok_or_else(|| anyhow!("K not positive semi-definite after jitter"))?;
+                z_mat.clone() * chol.unpack().transpose()
+            }
+        };
+        let svd_zbt = zbt.clone().svd(true, false);
+        let u_mat = svd_zbt
+            .u
+            .ok_or_else(|| anyhow!("SVD(ZBt) missing U"))?;
+        let mut phi_vals: Vec<f64> = svd_zbt.singular_values.iter().map(|v| v * v).collect();
+        if n_obs > n_ind {
+            phi_vals.extend(std::iter::repeat(0.0).take(n_obs - n_ind));
+        }
+
+        let szbt = &s_mat * &zbt;
+        let svd_szbt = match szbt.svd(true, true) {
+            s => s,
+        };
+        let u_szbt = svd_szbt
+            .u
+            .ok_or_else(|| anyhow!("SVD(SZBt) missing U"))?;
+        // QR([X | U_SZBt]) to drop X cols and get Q after rank p.
+        let combined = {
+            let mut data = Vec::with_capacity(n_obs * (p + u_szbt.ncols()));
+            for r in 0..n_obs {
+                for c in 0..p {
+                    data.push(x0_mat[(r, c)]);
+                }
+                for c in 0..u_szbt.ncols() {
+                    data.push(u_szbt[(r, c)]);
+                }
+            }
+            DMatrix::from_row_slice(n_obs, p + u_szbt.ncols(), &data)
+        };
+        let qr = combined.qr();
+        let q_full = qr.q();
+        let q_cols = if p < q_full.ncols() {
+            q_full.columns(p, q_full.ncols() - p).into_owned()
+        } else {
+            DMatrix::<f64>::zeros(n_obs, 0)
+        };
+        let mut theta_vals: Vec<f64> = svd_szbt
+            .singular_values
+            .iter()
+            .map(|v| v * v)
+            .collect();
+        if n_obs > p + n_ind {
+            theta_vals.extend(std::iter::repeat(0.0).take(n_obs - p - n_ind));
+        }
+
+        (phi_vals, theta_vals, u_mat, q_cols, 0.0)
+    } else {
+        // Eigen fallback (previous behavior).
+        let offset = (n_obs as f64).sqrt();
+        let hb = {
+            let zk = &z_mat * &k_mat;
+            let mut h = &zk * z_mat.transpose();
+            for i in 0..n_obs {
+                h[(i, i)] += offset;
+            }
+            h
+        };
+        let hb_eig = SymmetricEigen::new(hb);
+        let phi_vals: Vec<f64> = hb_eig
+            .eigenvalues
+            .iter()
+            .map(|v| *v - offset)
+            .collect();
+        if phi_vals.iter().cloned().fold(f64::INFINITY, f64::min) < -1e-6 {
+            return Err(anyhow!("K not positive semi-definite (phi < 0)"));
+        }
+        let u_mat = hb_eig.eigenvectors.clone();
+        let shbs = {
+            &s_mat * hb_eig.eigenvectors.clone()
+                * DMatrix::from_diagonal(&DVector::from_row_slice(
+                    &hb_eig
+                        .eigenvalues
+                        .iter()
+                        .map(|v| *v)
+                        .collect::<Vec<f64>>(),
+                ))
+                * hb_eig.eigenvectors.transpose()
+                * s_mat.transpose()
+        };
+        let shbs_eig = SymmetricEigen::new(shbs);
+        let n_theta = n_obs.saturating_sub(p);
+        let theta_vals: Vec<f64> = shbs_eig
+            .eigenvalues
+            .iter()
+            .take(n_theta)
+            .map(|v| *v - offset)
+            .collect();
+        let q_mat = shbs_eig.eigenvectors.columns(0, n_theta).into_owned();
+        (phi_vals, theta_vals, u_mat, q_mat, offset)
+    };
     let omega = q.transpose() * &y_vec;
     let omega_sq: Vec<f64> = omega.iter().map(|v| v * v).collect();
 
-    // REML objective and golden-section search on [1e-9, 1e9].
     let reml_obj = |lambda: f64| -> Option<f64> {
         if lambda <= 0.0 {
             return None;
@@ -183,12 +263,10 @@ pub fn fit_null_mixed_model(
         if denom <= 0.0 {
             return None;
         }
-        let term = theta
-            .iter()
-            .map(|t| (t + lambda).ln())
-            .sum::<f64>();
+        let term = theta.iter().map(|t| (t + lambda).ln()).sum::<f64>();
         Some(((n_obs - p) as f64) * denom.ln() + term)
     };
+
     let (mut a, mut b) = (1e-9f64, 1e9f64);
     let gr = 0.5 * (1.0 + 5f64.sqrt());
     let mut c = b - (b - a) / gr;
@@ -211,27 +289,24 @@ pub fn fit_null_mixed_model(
         }
     }
     let lambda_opt = if fc < fd { c } else { d };
-    let vu = omega_sq
+    let vu_opt = omega_sq
         .iter()
         .zip(theta.iter())
         .map(|(o, t)| o / (t + lambda_opt))
         .sum::<f64>()
         / ((n_obs - p) as f64);
+    let ve_opt = lambda_opt * vu_opt;
 
-    // Transforms using phi (length n_obs).
+    let d_inv_vals: Vec<f64> = phi.iter().map(|v| 1.0 / (v + lambda_opt)).collect();
     let d_inv_sqrt = DVector::from_iterator(
         phi.len(),
         phi.iter().map(|v| 1.0 / (v + lambda_opt).sqrt()),
     );
-    // Hinv = U diag(1/(phi+lambda)) U^T
     let h_inv = {
-        let mut diag_vals = Vec::with_capacity(phi.len());
-        for v in phi.iter() {
-            diag_vals.push(1.0 / (v + lambda_opt));
-        }
-        let d_inv = DMatrix::from_diagonal(&DVector::from_row_slice(&diag_vals));
+        let d_inv = DMatrix::from_diagonal(&DVector::from_row_slice(&d_inv_vals));
         &u * d_inv * u.transpose()
     };
+
     let y_t = u.transpose() * &y_vec;
     let mut y_star = y_t.clone();
     elementwise_scale_vec(&mut y_star, &d_inv_sqrt);
@@ -261,8 +336,10 @@ pub fn fit_null_mixed_model(
         y_star,
         x0_star,
         xtx_inv,
-        sigma2: lambda_opt * vu,
+        sigma2: ve_opt,
         lambda: lambda_opt,
+        vu: vu_opt,
+        ve: ve_opt,
     })
 }
 
