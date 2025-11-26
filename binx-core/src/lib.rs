@@ -4,8 +4,8 @@ use nalgebra::{DMatrix, DVector, SymmetricEigen};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs::File;
-use std::path::Path;
 use std::io::BufRead;
+use std::path::Path;
 
 pub type SampleId = String;
 pub type MarkerId = String;
@@ -13,8 +13,8 @@ pub type MarkerId = String;
 /// Simple phenotype table: samples × (traits + covariates).
 pub struct PhenotypeTable {
     pub sample_ids: Vec<SampleId>,
-    pub traits: HashMap<String, Array1<f64>>, // numeric trait_name -> y
-    pub covariates: HashMap<String, Array1<f64>>, // numeric cov_name -> x
+    pub traits: HashMap<String, Array1<f64>>,       // numeric trait_name -> y
+    pub covariates: HashMap<String, Array1<f64>>,   // numeric cov_name -> x
     pub factor_covariates: HashMap<String, Vec<String>>, // factor cov_name -> levels per observation
 }
 
@@ -34,8 +34,7 @@ pub struct KinshipMatrix {
     pub matrix: Array2<f64>,
 }
 
-/// Placeholder cache for mixed-model computations (Phase 3).
-/// Will hold transformed y/X and precomputed matrices for fast per-marker GLS.
+/// Cache for mixed-model computations.
 pub struct MixedModelCache {
     pub sample_ids: Vec<SampleId>, // matches y length (obs-level if Z provided)
     pub n_obs: usize,
@@ -49,13 +48,13 @@ pub struct MixedModelCache {
     pub lambda: f64,
 }
 
-/// Phase 3 stub: fit null mixed model y ~ X0 with kinship K.
-/// Implements a simple grid-search REML over lambda = sigma_g^2 / sigma_e^2.
+/// Fit null mixed model y ~ X0 with kinship K, rrBLUP-style spectral REML.
+/// If `z` is provided, it is the incidence matrix (n_obs x n_ind). Otherwise, identity is assumed (n_obs must equal n_ind).
 pub fn fit_null_mixed_model(
     y: &Array1<f64>,
     x0: &Array2<f64>,
     kinship: &KinshipMatrix,
-    z: Option<&Array2<f64>>, // optional incidence matrix (n_obs x n_ind). If provided, y/x0 are n_obs-long.
+    z: Option<&Array2<f64>>,
     obs_ids: Option<&[SampleId]>,
 ) -> Result<MixedModelCache> {
     let n_obs = y.len();
@@ -78,21 +77,22 @@ pub fn fit_null_mixed_model(
         ));
     }
 
-    let y_slice = y
-        .as_slice()
-        .ok_or_else(|| anyhow!("Trait array is not contiguous"))?;
-    let x_slice = x0
-        .as_slice()
-        .ok_or_else(|| anyhow!("Design matrix is not contiguous"))?;
-    let y_vec = DVector::from_row_slice(y_slice);
-    let x0_mat = DMatrix::from_row_slice(n_obs, p, x_slice);
+    let y_vec = DVector::from_row_slice(
+        y.as_slice()
+            .ok_or_else(|| anyhow!("Trait array is not contiguous"))?,
+    );
+    let x0_mat = DMatrix::from_row_slice(
+        n_obs,
+        p,
+        x0.as_slice()
+            .ok_or_else(|| anyhow!("Design matrix is not contiguous"))?,
+    );
 
-    // rrBLUP-style spectral decomposition on Hb = Z K Z^T (+ offset * I).
+    // Build Z.
     let n_ind = kinship.matrix.nrows();
     if kinship.matrix.ncols() != n_ind {
         return Err(anyhow!("Kinship matrix must be square"));
     }
-    let k_mat = DMatrix::from_row_slice(n_ind, n_ind, kinship.matrix.as_slice().unwrap());
     let z_mat = if let Some(z) = z {
         if z.ncols() != n_ind {
             return Err(anyhow!(
@@ -110,7 +110,6 @@ pub fn fit_null_mixed_model(
         }
         DMatrix::from_row_slice(z.nrows(), z.ncols(), z.as_slice().unwrap())
     } else {
-        // Identity incidence (n_obs must equal n_ind)
         if n_ind != n_obs {
             return Err(anyhow!(
                 "Kinship size ({}) does not match sample count ({})",
@@ -121,7 +120,9 @@ pub fn fit_null_mixed_model(
         DMatrix::identity(n_obs, n_ind)
     };
 
+    // Hb = Z K Z^T + offset * I (offset stabilizes eigen).
     let offset = (n_obs as f64).sqrt();
+    let k_mat = DMatrix::from_row_slice(n_ind, n_ind, kinship.matrix.as_slice().unwrap());
     let hb = {
         let zk = &z_mat * &k_mat;
         let mut h = &zk * z_mat.transpose();
@@ -148,13 +149,13 @@ pub fn fit_null_mixed_model(
         .try_inverse()
         .ok_or_else(|| anyhow!("X0 not full rank"))?;
     let proj = {
-        let n = n_obs;
-        let i = DMatrix::<f64>::identity(n, n);
+        let i = DMatrix::<f64>::identity(n_obs, n_obs);
         i - &x0_mat * (&xtx_inv * x0_mat.transpose())
     };
 
-    let shbs = &proj * eigenvectors * DMatrix::from_diagonal(&hb_eig.eigenvalues)
-        * proj.transpose();
+    // SHbS eigen to get theta/Q (projected space).
+    let shbs =
+        &proj * eigenvectors * DMatrix::from_diagonal(&hb_eig.eigenvalues) * proj.transpose();
     let shbs_eig = SymmetricEigen::new(shbs);
     let theta_full: Vec<f64> = shbs_eig
         .eigenvalues
@@ -167,41 +168,58 @@ pub fn fit_null_mixed_model(
     let omega = q.transpose() * &y_vec;
     let omega_sq: Vec<f64> = omega.iter().map(|v| v * v).collect();
 
-    // Optimize REML over lambda using a coarse grid over log10 in [-8, 8].
-    let mut best_ll = f64::INFINITY;
-    let mut best_lambda = 1.0;
-    for step in 0..=64 {
-        let log10_lambda = -8.0 + (step as f64) * (16.0 / 64.0);
-        let lambda = 10f64.powf(log10_lambda);
+    // REML objective and golden-section search on [1e-9, 1e9].
+    let reml_obj = |lambda: f64| -> Option<f64> {
+        if lambda <= 0.0 {
+            return None;
+        }
         let denom: f64 = omega_sq
             .iter()
             .zip(theta.iter())
             .map(|(o, t)| o / (t + lambda))
             .sum();
         if denom <= 0.0 {
-            continue;
+            return None;
         }
-        let ll = (n_obs - p) as f64 * (denom.ln())
-            + theta.iter().map(|t| (t + lambda).ln()).sum::<f64>();
-        if ll < best_ll {
-            best_ll = ll;
-            best_lambda = lambda;
+        let term = theta
+            .iter()
+            .map(|t| (t + lambda).ln())
+            .sum::<f64>();
+        Some(((n_obs - p) as f64) * denom.ln() + term)
+    };
+    let (mut a, mut b) = (1e-9f64, 1e9f64);
+    let gr = 0.5 * (1.0 + 5f64.sqrt());
+    let mut c = b - (b - a) / gr;
+    let mut d = a + (b - a) / gr;
+    let mut fc = reml_obj(c).unwrap_or(f64::INFINITY);
+    let mut fd = reml_obj(d).unwrap_or(f64::INFINITY);
+    for _ in 0..120 {
+        if fc < fd {
+            b = d;
+            d = c;
+            fd = fc;
+            c = b - (b - a) / gr;
+            fc = reml_obj(c).unwrap_or(f64::INFINITY);
+        } else {
+            a = c;
+            c = d;
+            fc = fd;
+            d = a + (b - a) / gr;
+            fd = reml_obj(d).unwrap_or(f64::INFINITY);
         }
     }
-    let lambda_opt = best_lambda;
+    let lambda_opt = if fc < fd { c } else { d };
     let vu = omega_sq
         .iter()
         .zip(theta.iter())
         .map(|(o, t)| o / (t + lambda_opt))
         .sum::<f64>()
         / ((n_obs - p) as f64);
-    let _ve = lambda_opt * vu;
 
-    // Build transforms using phi (length n_obs).
-    let phi_plus: Vec<f64> = phi.iter().map(|v| v + lambda_opt).collect();
+    // Transforms using phi (length n_obs).
     let d_inv_sqrt = DVector::from_iterator(
-        phi_plus.len(),
-        phi_plus.iter().map(|v| 1.0 / v.sqrt()),
+        phi.len(),
+        phi.iter().map(|v| 1.0 / (v + lambda_opt).sqrt()),
     );
     let y_t = u.transpose() * &y_vec;
     let mut y_star = y_t.clone();
@@ -211,8 +229,8 @@ pub fn fit_null_mixed_model(
     let mut x0_star = x_t.clone();
     elementwise_scale_rows(&mut x0_star, &d_inv_sqrt);
 
-    let xtx = &x0_star.transpose() * &x0_star;
-    let xtx_inv = xtx
+    let xtx_star = &x0_star.transpose() * &x0_star;
+    let xtx_inv = xtx_star
         .try_inverse()
         .ok_or_else(|| anyhow!("Failed to invert X0*^T X0*"))?;
 
@@ -232,81 +250,8 @@ pub fn fit_null_mixed_model(
         x0_star,
         xtx_inv,
         sigma2: lambda_opt * vu,
-        lambda: best_lambda,
+        lambda: lambda_opt,
     })
-}
-
-fn build_delta_inv_sqrt(lambda: f64, vals: &DVector<f64>) -> (Vec<f64>, DVector<f64>) {
-    let mut delta = Vec::with_capacity(vals.len());
-    let mut inv_sqrt = Vec::with_capacity(vals.len());
-    for &d in vals.iter() {
-        let val = lambda * d + 1.0;
-        delta.push(val);
-        inv_sqrt.push(1.0 / val.sqrt());
-    }
-    let inv_sqrt_vec = DVector::from_row_slice(&inv_sqrt);
-    (delta, inv_sqrt_vec)
-}
-
-fn reml_loglik(
-    lambda: f64,
-    vals: &DVector<f64>,
-    y_t: &DVector<f64>,
-    x_t: &DMatrix<f64>,
-) -> Option<(f64, f64)> {
-    let n = y_t.len();
-    let p = x_t.ncols();
-    let mut delta = Vec::with_capacity(n);
-    let mut inv = Vec::with_capacity(n);
-    for &d in vals.iter() {
-        let v = lambda * d + 1.0;
-        delta.push(v);
-        inv.push(1.0 / v);
-    }
-
-    let (xt_dinv_x, xt_dinv_y, y_dinv_y) = accumulate_weighted_moments(x_t, y_t, &inv);
-    let lu = xt_dinv_x.lu();
-    if !lu.is_invertible() {
-        return None;
-    }
-    let beta = lu.solve(&xt_dinv_y)?;
-    let resid = y_dinv_y - xt_dinv_y.dot(&beta);
-    if resid <= 0.0 {
-        return None;
-    }
-    let sigma2 = resid / ((n - p) as f64);
-    if !sigma2.is_finite() || sigma2 <= 0.0 {
-        return None;
-    }
-    let logdet_xt = lu.determinant().abs().ln();
-    let logdet_delta: f64 = delta.iter().map(|v| v.ln()).sum();
-    let ll = -0.5 * (logdet_delta + logdet_xt + (n - p) as f64 * (sigma2.ln() + 1.0));
-    Some((ll, sigma2))
-}
-
-fn accumulate_weighted_moments(
-    x_t: &DMatrix<f64>,
-    y_t: &DVector<f64>,
-    inv: &[f64],
-) -> (DMatrix<f64>, DVector<f64>, f64) {
-    let n = y_t.len();
-    let p = x_t.ncols();
-    let mut xt_dinv_x = DMatrix::<f64>::zeros(p, p);
-    let mut xt_dinv_y = DVector::<f64>::zeros(p);
-    let mut y_dinv_y = 0.0;
-    for i in 0..n {
-        let w = inv[i];
-        let yv = y_t[i];
-        y_dinv_y += w * yv * yv;
-        for a in 0..p {
-            let xa = x_t[(i, a)];
-            xt_dinv_y[a] += w * xa * yv;
-            for b in 0..p {
-                xt_dinv_x[(a, b)] += w * xa * x_t[(i, b)];
-            }
-        }
-    }
-    (xt_dinv_x, xt_dinv_y, y_dinv_y)
 }
 
 fn elementwise_scale_vec(v: &mut DVector<f64>, scale: &DVector<f64>) {
@@ -381,7 +326,6 @@ fn load_phenotypes_internal<P: AsRef<Path>>(
     let value_cols: Vec<String> = col_names.iter().skip(1).cloned().collect();
 
     let mut sample_ids = Vec::new();
-    // Collect raw string values per column; we will type them after reading.
     let mut raw_columns: HashMap<String, Vec<String>> = value_cols
         .iter()
         .map(|name| (name.clone(), Vec::new()))
@@ -546,7 +490,6 @@ pub fn load_kinship_from_tsv<P: AsRef<Path>>(path: P) -> Result<KinshipMatrix> {
     })
 }
 
-
 /// Phase 2: load PCs from TSV.
 /// Expecting rows of: sample_id  PC1  PC2 ...
 pub fn load_pcs_from_tsv<P: AsRef<Path>>(path: P) -> Result<PcMatrix> {
@@ -602,7 +545,7 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
 
-fn write_temp(contents: &str) -> NamedTempFile {
+    fn write_temp(contents: &str) -> NamedTempFile {
         let mut file = NamedTempFile::new().expect("create temp file");
         write!(file, "{}", contents).expect("write temp file");
         file
