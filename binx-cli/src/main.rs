@@ -75,6 +75,21 @@ enum Commands {
         #[arg(long)]
         out: String,
     },
+
+    /// Compute kinship matrix (VanRaden additive) from biallelic dosages
+    Kinship {
+        /// Genotype dosage file (biallelic; markers x samples)
+        #[arg(long)]
+        geno: String,
+
+        /// Ploidy (e.g., 2, 4, 6)
+        #[arg(long)]
+        ploidy: u8,
+
+        /// Output TSV path for kinship matrix
+        #[arg(long)]
+        out: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -127,6 +142,9 @@ fn main() -> Result<()> {
                 &model,
                 &out,
             )?;
+        }
+        Commands::Kinship { geno, ploidy, out } => {
+            binx_kinship::run_kinship(&geno, ploidy, &out)?;
         }
     }
 

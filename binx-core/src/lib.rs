@@ -397,6 +397,7 @@ pub fn load_kinship_from_tsv<P: AsRef<Path>>(path: P) -> Result<KinshipMatrix> {
     })
 }
 
+
 /// Phase 2: load PCs from TSV.
 /// Expecting rows of: sample_id  PC1  PC2 ...
 pub fn load_pcs_from_tsv<P: AsRef<Path>>(path: P) -> Result<PcMatrix> {
