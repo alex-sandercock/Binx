@@ -1,10 +1,12 @@
-# Binx
-<p align="center">
-  <img src="docs/assets/binx-logo.png" alt="Binx logo" width="200" />
-</p>
+
+# Binx <img src="docs/assets/binx-logo.png" align="right" width="250"/>
 
 Rust command-line genomics workbench for diploid and polyploid species. `binx` targets GWAS-style analyses with a familiar UX: fast defaults, explicit inputs, and clear TSV outputs.
 
+-
+-
+-
+-
 ## Highlights
 - Biallelic GWAS (`binx gwas`) with linear models by default; switch to LMM when a kinship matrix is provided.
 - Polyploid-aware: pass ploidy for genotype scaling; supports repeated phenotype IDs and optional environment filtering.
