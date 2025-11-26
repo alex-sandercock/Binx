@@ -231,15 +231,21 @@ fn parity_potato_additive_env() -> Result<()> {
 
     let geno = repo_path("tests/parity/data/potato/new_potato_geno.csv");
     let pheno = repo_path("tests/parity/data/potato/new_potato_pheno.csv");
-    let kin = repo_path("tests/parity/data/potato/new_potato_kinship.tsv");
+    // Prefer the kinship that matches the user's run; fall back to the GWASpoly-derived one.
+    let kin = repo_path("tests/parity/data/potato/binx_kin.tsv");
+    let kin_fallback = repo_path("tests/parity/data/potato/new_potato_kinship.tsv");
     let reference = repo_path("tests/parity/fixtures/potato_additive_env.tsv");
     if !ensure_fixture(&reference) {
         return Ok(());
     }
-    if !geno.exists() || !pheno.exists() || !kin.exists() {
+    let kin_path = if kin.exists() {
+        kin
+    } else if kin_fallback.exists() {
+        kin_fallback
+    } else {
         eprintln!("Skipping potato parity: missing geno/pheno/kinship fixtures");
         return Ok(());
-    }
+    };
 
     let outfile = NamedTempFile::new().context("creating temp output")?;
     run_binx_gwas(
@@ -255,7 +261,7 @@ fn parity_potato_additive_env() -> Result<()> {
             "--covariates",
             "env",
             "--kinship",
-            kin.to_str().unwrap(),
+            kin_path.to_str().unwrap(),
             "--model",
             "additive",
             "--allow-missing-samples",

@@ -162,7 +162,7 @@ pub fn fit_null_mixed_model(
         .iter()
         .map(|v| *v - offset)
         .collect();
-    let n_theta = n_obs - p;
+    let n_theta = n_obs.saturating_sub(p);
     let theta: Vec<f64> = theta_full.iter().take(n_theta).cloned().collect();
     let q = shbs_eig.eigenvectors.columns(0, n_theta).into_owned();
     let omega = q.transpose() * &y_vec;
