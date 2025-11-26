@@ -3,7 +3,7 @@
   <img src="docs/assets/binx-logo.png" alt="Binx logo" width="200" />
 </p>
 
-Rust command-line genomics workbench for diploid and polyploid species. `binx` targets GWAS-style analyses with a bcftools/sourmash-like UX: fast defaults, explicit inputs, and clear TSV outputs.
+Rust command-line genomics workbench for diploid and polyploid species. `binx` targets GWAS-style analyses with a familiar UX: fast defaults, explicit inputs, and clear TSV outputs.
 
 ## Highlights
 - Biallelic GWAS (`binx gwas`) with linear models by default; switch to LMM when a kinship matrix is provided.
