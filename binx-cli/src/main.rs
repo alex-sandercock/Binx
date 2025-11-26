@@ -41,6 +41,18 @@ enum Commands {
         #[arg(long)]
         kinship: Option<String>,
 
+        /// Allow dropping genotype samples that lack phenotypes
+        #[arg(long, default_value_t = false)]
+        allow_missing_samples: bool,
+
+        /// Optional environment column name to filter phenotype rows (e.g., env)
+        #[arg(long)]
+        env_column: Option<String>,
+
+        /// Environment value to keep (used with --env-column)
+        #[arg(long)]
+        env_value: Option<String>,
+
         /// Ploidy (e.g., 2, 4, 6)
         #[arg(long)]
         ploidy: u8,
@@ -103,6 +115,9 @@ fn main() -> Result<()> {
         covariates,
         pcs,
         kinship,
+        allow_missing_samples,
+        env_column,
+        env_value,
         ploidy,
         model,
         out,
@@ -115,6 +130,9 @@ fn main() -> Result<()> {
             covariate_list.as_deref(),
             pcs.as_deref(),
             kinship.as_deref(),
+            allow_missing_samples,
+            env_column.as_deref(),
+            env_value.as_deref(),
             ploidy,
             &model,
             &out,

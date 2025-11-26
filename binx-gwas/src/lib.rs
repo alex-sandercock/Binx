@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use binx_core::{
     fit_null_mixed_model, load_genotypes_biallelic_from_tsv, load_kinship_from_tsv,
-    load_phenotypes_from_tsv, load_pcs_from_tsv, GenotypeMatrixBiallelic, KinshipMatrix,
+    load_phenotypes_filtered, load_pcs_from_tsv, GenotypeMatrixBiallelic, KinshipMatrix,
     MixedModelCache,
 };
 use ndarray::{Array1, Array2, Axis};
@@ -33,6 +33,9 @@ pub fn run_gwas(
     covariate_names: Option<&[String]>,
     pcs_path: Option<&str>,
     kinship_path: Option<&str>,
+    allow_missing_samples: bool,
+    env_column: Option<&str>,
+    env_value: Option<&str>,
     ploidy: u8,
     model_str: &str,
     out_path: &str,
@@ -41,20 +44,22 @@ pub fn run_gwas(
 
     // Load genotype and phenotype data.
     let geno = load_genotypes_biallelic_from_tsv(geno_path, ploidy)?;
-    let pheno = load_phenotypes_from_tsv(pheno_path)?;
+    let pheno = load_phenotypes_filtered(pheno_path, env_column, env_value)?;
 
-    // Build alignment index from phenotype to genotype sample order.
-    let pheno_to_geno = build_alignment_index(&pheno.sample_ids, &geno.sample_ids)?;
+    // Align samples: choose intersection, optionally allowing missing geno IDs.
+    let (geno_keep, pheno_idx) =
+        align_samples(&pheno.sample_ids, &geno.sample_ids, allow_missing_samples)?;
+    let geno = subset_genotypes(&geno, &geno_keep)?;
 
     // Extract and align trait vector y.
     let y_full = pheno
         .traits
         .get(trait_name)
         .ok_or_else(|| anyhow!("Trait '{}' not found in phenotype file", trait_name))?;
-    let y = align_vector(y_full, &pheno_to_geno);
+    let y = align_vector(y_full, &pheno_idx);
 
     // Build base design: intercept + covariates + PCs (all aligned to genotype order).
-    let base_design = build_base_design(&pheno, covariate_names, pcs_path, &geno, &pheno_to_geno)?;
+    let base_design = build_base_design(&pheno, covariate_names, pcs_path, &geno, &pheno_idx)?;
 
     if let Some(k_path) = kinship_path {
         let kin = load_kinship(k_path)?;
@@ -108,6 +113,70 @@ fn build_alignment_index(source_ids: &[String], target_ids: &[String]) -> Result
     }
 
     Ok(aligned)
+}
+
+/// Align samples, returning geno indices to keep (in order) and corresponding pheno indices.
+fn align_samples(
+    pheno_ids: &[String],
+    geno_ids: &[String],
+    allow_missing: bool,
+) -> Result<(Vec<usize>, Vec<usize>)> {
+    let mut pheno_map = HashMap::new();
+    for (i, sid) in pheno_ids.iter().enumerate() {
+        if pheno_map.insert(sid.as_str(), i).is_some() {
+            return Err(anyhow!("Duplicate sample_id '{}' in phenotype file", sid));
+        }
+    }
+
+    let mut geno_keep = Vec::new();
+    let mut pheno_idx = Vec::new();
+    let mut missing = Vec::new();
+    for (g_idx, sid) in geno_ids.iter().enumerate() {
+        if let Some(p_idx) = pheno_map.get(sid.as_str()) {
+            geno_keep.push(g_idx);
+            pheno_idx.push(*p_idx);
+        } else {
+            missing.push(sid.clone());
+        }
+    }
+
+    if geno_keep.is_empty() {
+        return Err(anyhow!(
+            "No overlapping sample_ids between genotype and phenotype files"
+        ));
+    }
+
+    if !allow_missing && !missing.is_empty() {
+        return Err(anyhow!(
+            "Missing rows for sample_ids: {}",
+            missing.join(", ")
+        ));
+    }
+
+    Ok((geno_keep, pheno_idx))
+}
+
+fn subset_genotypes(
+    geno: &GenotypeMatrixBiallelic,
+    keep_indices: &[usize],
+) -> Result<GenotypeMatrixBiallelic> {
+    let n_markers = geno.marker_ids.len();
+    let mut dosages = Array2::<f64>::zeros((n_markers, keep_indices.len()));
+    for (row_idx, marker_row) in geno.dosages.outer_iter().enumerate() {
+        for (col_out, &col_in) in keep_indices.iter().enumerate() {
+            dosages[(row_idx, col_out)] = marker_row[col_in];
+        }
+    }
+    let sample_ids = keep_indices
+        .iter()
+        .map(|&i| geno.sample_ids[i].clone())
+        .collect();
+    Ok(GenotypeMatrixBiallelic {
+        ploidy: geno.ploidy,
+        sample_ids,
+        marker_ids: geno.marker_ids.clone(),
+        dosages,
+    })
 }
 
 fn align_vector(values: &Array1<f64>, index: &[usize]) -> Array1<f64> {

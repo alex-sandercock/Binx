@@ -5,6 +5,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
+use std::io::BufRead;
 
 pub type SampleId = String;
 pub type MarkerId = String;
@@ -253,16 +254,44 @@ struct PhenoRow {
 /// Phase 1: load phenotypes from a TSV.
 /// Assumes first column is sample_id, others numeric.
 pub fn load_phenotypes_from_tsv<P: AsRef<Path>>(path: P) -> Result<PhenotypeTable> {
-    let file = File::open(path)?;
-    let mut rdr = csv::ReaderBuilder::new().delimiter(b'\t').from_reader(file);
+    load_phenotypes_internal(path, None)
+}
+
+/// Phase 1: load phenotypes with optional row filter on a column/value (e.g., env).
+pub fn load_phenotypes_filtered<P: AsRef<Path>>(
+    path: P,
+    filter_column: Option<&str>,
+    filter_value: Option<&str>,
+) -> Result<PhenotypeTable> {
+    load_phenotypes_internal(path, filter_column.zip(filter_value))
+}
+
+fn load_phenotypes_internal<P: AsRef<Path>>(
+    path: P,
+    filter: Option<(&str, &str)>,
+) -> Result<PhenotypeTable> {
+    let delim = detect_delimiter(&path)?;
+    let mut rdr = csv::ReaderBuilder::new()
+        .delimiter(delim)
+        .from_path(&path)?;
 
     let headers = rdr.headers()?.clone();
     let col_names: Vec<String> = headers.iter().map(|s| s.to_string()).collect();
 
-    // First column is sample_id; the rest are numeric.
+    let filter_idx = if let Some((col, _)) = filter {
+        headers
+            .iter()
+            .position(|h| h == col)
+            .ok_or_else(|| anyhow!("Filter column '{}' not found in phenotype file", col))?
+    } else {
+        usize::MAX
+    };
+
+    // First column is sample_id/id; the rest are numeric.
     let value_cols: Vec<String> = col_names.iter().skip(1).cloned().collect();
 
     let mut sample_ids = Vec::new();
+    let mut keep_col: Vec<bool> = vec![true; value_cols.len()];
     let mut columns: HashMap<String, Vec<f64>> = value_cols
         .iter()
         .map(|name| (name.clone(), Vec::new()))
@@ -270,27 +299,44 @@ pub fn load_phenotypes_from_tsv<P: AsRef<Path>>(path: P) -> Result<PhenotypeTabl
 
     for result in rdr.records() {
         let record = result?;
+        if let Some((_, filter_val)) = filter {
+            if record
+                .get(filter_idx)
+                .map(|v| v != filter_val)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+        }
         let sample_id = record.get(0).unwrap().to_string();
         sample_ids.push(sample_id);
 
         for (i, col_name) in value_cols.iter().enumerate() {
+            if !keep_col[i] {
+                continue;
+            }
             let val_str = record.get(i + 1).unwrap();
-            let val: f64 = val_str.parse().map_err(|e| {
-                anyhow!(
-                    "Failed to parse value '{}' in column '{}': {}",
-                    val_str,
-                    col_name,
-                    e
-                )
-            })?;
-            columns.get_mut(col_name).unwrap().push(val);
+            match val_str.parse::<f64>() {
+                Ok(val) => columns.get_mut(col_name).unwrap().push(val),
+                Err(_) => {
+                    // Mark column to drop if non-numeric encountered.
+                    keep_col[i] = false;
+                    eprintln!(
+                        "Warning: dropping non-numeric column '{}' from phenotypes",
+                        col_name
+                    );
+                }
+            }
         }
     }
 
     let mut traits = HashMap::new();
     let covariates = HashMap::new(); // fill later if you want to distinguish
 
-    for (name, vals) in columns {
+    for (i, (name, vals)) in columns.into_iter().enumerate() {
+        if !keep_col[i] {
+            continue;
+        }
         let arr = Array1::from(vals);
         traits.insert(name, arr);
     }
@@ -309,11 +355,19 @@ pub fn load_genotypes_biallelic_from_tsv<P: AsRef<Path>>(
     path: P,
     ploidy: u8,
 ) -> Result<GenotypeMatrixBiallelic> {
-    let file = File::open(path)?;
-    let mut rdr = csv::ReaderBuilder::new().delimiter(b'\t').from_reader(file);
+    let delim = detect_delimiter(&path)?;
+    let mut rdr = csv::ReaderBuilder::new()
+        .delimiter(delim)
+        .from_path(&path)?;
 
     let headers = rdr.headers()?.clone();
     let header_strings: Vec<String> = headers.iter().map(|s| s.to_string()).collect();
+
+    if headers.len() < 4 {
+        return Err(anyhow!(
+            "Genotype file needs at least 4 columns: marker_id, chr, pos, <samples...>"
+        ));
+    }
 
     // Assume first 3 columns are marker metadata: id, chr, pos.
     // Sample IDs start at index 3.
@@ -360,8 +414,8 @@ pub fn load_genotypes_biallelic_from_tsv<P: AsRef<Path>>(
 /// Expecting:
 /// sample_id  S1  S2  S3 ...
 pub fn load_kinship_from_tsv<P: AsRef<Path>>(path: P) -> Result<KinshipMatrix> {
-    let file = File::open(path)?;
-    let mut rdr = csv::ReaderBuilder::new().delimiter(b'\t').from_reader(file);
+    let delim = detect_delimiter(&path)?;
+    let mut rdr = csv::ReaderBuilder::new().delimiter(delim).from_path(&path)?;
 
     let headers = rdr.headers()?.clone();
     let header_strings: Vec<String> = headers.iter().map(|s| s.to_string()).collect();
@@ -453,7 +507,7 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
 
-    fn write_temp(contents: &str) -> NamedTempFile {
+fn write_temp(contents: &str) -> NamedTempFile {
         let mut file = NamedTempFile::new().expect("create temp file");
         write!(file, "{}", contents).expect("write temp file");
         file
@@ -503,5 +557,20 @@ mod tests {
         assert_eq!(pcs.sample_ids, vec!["S1", "S2"]);
         assert_eq!(pcs.pcs.shape(), &[2, 2]);
         assert_eq!(pcs.pcs[[0, 1]], 0.2);
+    }
+}
+
+/// Detect delimiter as tab or comma from the first non-empty line.
+fn detect_delimiter<P: AsRef<Path>>(path: P) -> Result<u8> {
+    let file = File::open(path.as_ref())?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut first_line = String::new();
+    reader.read_line(&mut first_line)?;
+    let tabs = first_line.matches('\t').count();
+    let commas = first_line.matches(',').count();
+    if commas > tabs {
+        Ok(b',')
+    } else {
+        Ok(b'\t')
     }
 }
