@@ -10,5 +10,6 @@ anyhow = "1"
 ndarray = "0.15"
 statrs = "0.16"
 binx-core = { path = "../binx-core" }
+binx-kinship = { path = "../binx-kinship" }
 csv = "1.4"
 nalgebra = "0.29"

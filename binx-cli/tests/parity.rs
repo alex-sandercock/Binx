@@ -251,6 +251,8 @@ fn parity_potato_additive_env() -> Result<()> {
             "4",
             "--trait-name",
             "vine.maturity",
+            "--covariates",
+            "env",
             "--model",
             "additive",
         ],

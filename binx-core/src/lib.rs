@@ -13,8 +13,9 @@ pub type MarkerId = String;
 /// Simple phenotype table: samples × (traits + covariates).
 pub struct PhenotypeTable {
     pub sample_ids: Vec<SampleId>,
-    pub traits: HashMap<String, Array1<f64>>, // trait_name -> y
-    pub covariates: HashMap<String, Array1<f64>>, // cov_name -> x
+    pub traits: HashMap<String, Array1<f64>>, // numeric trait_name -> y
+    pub covariates: HashMap<String, Array1<f64>>, // numeric cov_name -> x
+    pub factor_covariates: HashMap<String, Vec<String>>, // factor cov_name -> levels per observation
 }
 
 /// Biallelic dosage matrix: markers × samples, entries 0..ploidy.
@@ -291,8 +292,8 @@ fn load_phenotypes_internal<P: AsRef<Path>>(
     let value_cols: Vec<String> = col_names.iter().skip(1).cloned().collect();
 
     let mut sample_ids = Vec::new();
-    let mut keep_col: Vec<bool> = vec![true; value_cols.len()];
-    let mut columns: HashMap<String, Vec<f64>> = value_cols
+    // Collect raw string values per column; we will type them after reading.
+    let mut raw_columns: HashMap<String, Vec<String>> = value_cols
         .iter()
         .map(|name| (name.clone(), Vec::new()))
         .collect();
@@ -312,39 +313,44 @@ fn load_phenotypes_internal<P: AsRef<Path>>(
         sample_ids.push(sample_id);
 
         for (i, col_name) in value_cols.iter().enumerate() {
-            if !keep_col[i] {
-                continue;
-            }
             let val_str = record.get(i + 1).unwrap();
-            match val_str.parse::<f64>() {
-                Ok(val) => columns.get_mut(col_name).unwrap().push(val),
-                Err(_) => {
-                    // Mark column to drop if non-numeric encountered.
-                    keep_col[i] = false;
-                    eprintln!(
-                        "Warning: dropping non-numeric column '{}' from phenotypes",
-                        col_name
-                    );
-                }
-            }
+            raw_columns
+                .get_mut(col_name)
+                .unwrap()
+                .push(val_str.to_string());
         }
     }
 
     let mut traits = HashMap::new();
-    let covariates = HashMap::new(); // fill later if you want to distinguish
+    let mut covariates = HashMap::new();
+    let mut factor_covariates = HashMap::new();
 
-    for (i, (name, vals)) in columns.into_iter().enumerate() {
-        if !keep_col[i] {
-            continue;
+    for (name, vals) in raw_columns.into_iter() {
+        let mut numeric_vals = Vec::with_capacity(vals.len());
+        let mut all_numeric = true;
+        for v in &vals {
+            match v.parse::<f64>() {
+                Ok(val) => numeric_vals.push(val),
+                Err(_) => {
+                    all_numeric = false;
+                    break;
+                }
+            }
         }
-        let arr = Array1::from(vals);
-        traits.insert(name, arr);
+        if all_numeric {
+            let arr = Array1::from(numeric_vals);
+            traits.insert(name.clone(), arr.clone());
+            covariates.insert(name, arr);
+        } else {
+            factor_covariates.insert(name, vals);
+        }
     }
 
     Ok(PhenotypeTable {
         sample_ids,
         traits,
         covariates,
+        factor_covariates,
     })
 }
 
