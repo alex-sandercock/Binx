@@ -82,6 +82,8 @@ dependencies = [
  "binx-kinship",
  "binx-multigwas",
  "clap",
+ "csv",
+ "tempfile",
 ]
 
 [[package]]

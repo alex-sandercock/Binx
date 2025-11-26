@@ -1,0 +1,5 @@
+marker_id	chrom	pos	model	score	p_value	effect	n_obs
+m1	1	10	additive	NA	NA	NA	5
+m2	1	20	additive	NA	NA	NA	5
+m3	2	5	additive	NA	NA	NA	5
+m4	2	15	additive	NA	NA	NA	5
