@@ -41,6 +41,7 @@ pub struct MixedModelCache {
     pub n_ind: usize,
     pub u: DMatrix<f64>,
     pub d_inv_sqrt: DVector<f64>,
+    pub h_inv: DMatrix<f64>,
     pub y_star: DVector<f64>,
     pub x0_star: DMatrix<f64>,
     pub xtx_inv: DMatrix<f64>,
@@ -221,6 +222,15 @@ pub fn fit_null_mixed_model(
         phi.len(),
         phi.iter().map(|v| 1.0 / (v + lambda_opt).sqrt()),
     );
+    // Hinv = U diag(1/(phi+lambda)) U^T
+    let h_inv = {
+        let mut diag_vals = Vec::with_capacity(phi.len());
+        for v in phi.iter() {
+            diag_vals.push(1.0 / (v + lambda_opt));
+        }
+        let d_inv = DMatrix::from_diagonal(&DVector::from_row_slice(&diag_vals));
+        &u * d_inv * u.transpose()
+    };
     let y_t = u.transpose() * &y_vec;
     let mut y_star = y_t.clone();
     elementwise_scale_vec(&mut y_star, &d_inv_sqrt);
@@ -246,6 +256,7 @@ pub fn fit_null_mixed_model(
         n_ind,
         u,
         d_inv_sqrt,
+        h_inv,
         y_star,
         x0_star,
         xtx_inv,

@@ -123,7 +123,7 @@ pub fn run_gwas(
             let x0_array = base_design_to_array2(&base_design)?;
             let cache =
                 fit_null_mixed_model(&y, &x0_array, &kin, Some(&z_mat), Some(&geno_obs.sample_ids))?;
-            let results = run_lmm_gwas(&geno_obs, &cache, model)?;
+            let results = run_lmm_score_gwas(&geno_obs, &y, &base_design, &cache, model)?;
             write_results_tsv(out_path, &results)?;
         } else {
             let results = run_lm_gwas(&geno_obs, &y, &base_design, model)?;
@@ -156,7 +156,7 @@ pub fn run_gwas(
             let kin_aligned = align_kinship_to_genotypes(kin, &geno.sample_ids)?;
             let x0_array = base_design_to_array2(&base_design)?;
             let cache = fit_null_mixed_model(&y, &x0_array, &kin_aligned, None, None)?;
-            let results = run_lmm_gwas(&geno, &cache, model)?;
+            let results = run_lmm_score_gwas(&geno, &y, &base_design, &cache, model)?;
             write_results_tsv(out_path, &results)?;
         } else {
             // Run LM-based GWAS.
@@ -691,6 +691,127 @@ fn run_lmm_gwas(
             beta: beta_marker,
             se: se_marker,
             t_stat,
+            p_value,
+        });
+    }
+
+    Ok(results)
+}
+
+/// LMM score/F-test using Hinv from MixedModelCache (rrBLUP/GWASpoly-like).
+fn passes_marker_qc(dosage: &Array1<f64>, ploidy: u8, n_geno: usize, min_maf: f64, max_geno_freq: f64) -> bool {
+    if n_geno == 0 {
+        return false;
+    }
+    let mean = dosage.sum() / (dosage.len() as f64);
+    let freq = mean / (ploidy as f64);
+    if freq.min(1.0 - freq) < min_maf {
+        return false;
+    }
+    // genotype frequency based on rounded dosage
+    let mut counts: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+    for &d in dosage.iter() {
+        let r = d.round() as i64;
+        *counts.entry(r).or_insert(0) += 1;
+    }
+    let max_freq = counts.values().cloned().max().unwrap_or(0) as f64 / (n_geno as f64);
+    max_freq <= max_geno_freq
+}
+
+fn run_lmm_score_gwas(
+    geno: &GenotypeMatrixBiallelic,
+    y: &Array1<f64>,
+    base_design_cols: &[Vec<f64>],
+    cache: &MixedModelCache,
+    model: GeneActionModel,
+) -> Result<Vec<MarkerResult>> {
+    let n_samples = geno.sample_ids.len();
+    let n_markers = geno.marker_ids.len();
+    let p0 = base_design_cols.len();
+    let n_geno_qc = cache.n_ind.max(1);
+    let max_geno_freq_default = 1.0 - 5.0 / (n_geno_qc as f64);
+    let min_maf_default = 0.0;
+
+    // Build X0 matrix from base_design_cols.
+    let x0 = base_design_to_array2(base_design_cols)?;
+    if x0.nrows() != n_samples {
+        return Err(anyhow!(
+            "X0 rows {} do not match samples {}",
+            x0.nrows(),
+            n_samples
+        ));
+    }
+    let y_slice = y
+        .as_slice()
+        .ok_or_else(|| anyhow!("Trait array is not contiguous"))?;
+    let y_vec = DVector::from_row_slice(y_slice);
+
+    let h_inv = &cache.h_inv;
+
+    let mut results = Vec::with_capacity(n_markers);
+
+    for (marker_idx, marker_id) in geno.marker_ids.iter().enumerate() {
+        let dosage = geno.dosages.index_axis(Axis(0), marker_idx).to_owned();
+        let x_marker = encode_marker(&dosage, geno.ploidy, model)?;
+
+        // QC filters (approximate GWASpoly defaults).
+        if !passes_marker_qc(
+            &dosage,
+            geno.ploidy,
+            n_geno_qc,
+            min_maf_default,
+            max_geno_freq_default,
+        ) {
+            continue;
+        }
+
+        // Build design matrix X = [X0 | marker]
+        let p = p0 + 1;
+        let mut data = Vec::with_capacity(n_samples * p);
+        for row in 0..n_samples {
+            for col in 0..p0 {
+                data.push(x0[(row, col)]);
+            }
+            data.push(x_marker[row]);
+        }
+        let x = DMatrix::from_row_slice(n_samples, p, &data);
+
+        // W = X^T Hinv X
+        let w = &x.transpose() * h_inv * &x;
+        let w_inv = match w.try_inverse() {
+            Some(inv) => inv,
+            None => continue, // skip singular
+        };
+        let beta = w_inv.clone() * (&x.transpose() * h_inv * &y_vec);
+        let resid = &y_vec - &x * &beta;
+        let v2 = (n_samples as f64) - (p as f64);
+        if v2 <= 0.0 {
+            continue;
+        }
+        let s2 = (resid.transpose() * h_inv * resid)[(0, 0)] / v2;
+
+        // For additive v1=1: use last coefficient variance.
+        let se_marker = (s2 * w_inv[(p - 1, p - 1)]).sqrt();
+        let beta_marker = beta[p - 1];
+        let fstat = if se_marker > 0.0 {
+            (beta_marker * beta_marker) / (s2 * w_inv[(p - 1, p - 1)])
+        } else {
+            0.0
+        };
+        let v1 = 1.0;
+        let x_val = v2 / (v2 + v1 * fstat);
+        let p_value = if x_val.is_finite() && x_val >= 0.0 && x_val <= 1.0 {
+            let beta_dist = statrs::distribution::Beta::new(v2 / 2.0, v1 / 2.0)?;
+            1.0 - beta_dist.cdf(x_val)
+        } else {
+            1.0
+        };
+
+        results.push(MarkerResult {
+            marker_id: marker_id.clone(),
+            beta: beta_marker,
+            se: se_marker,
+            t_stat: fstat,
             p_value,
         });
     }
