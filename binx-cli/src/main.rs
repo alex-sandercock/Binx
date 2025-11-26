@@ -15,7 +15,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Biallelic GWASpoly-style GWAS (Phase 2: LM only, no K)
+    /// Biallelic GWASpoly-style GWAS (supports LM and LMM; use --kinship for LMM)
     Gwas {
         /// Genotype dosage file (biallelic; markers x samples)
         #[arg(long)]

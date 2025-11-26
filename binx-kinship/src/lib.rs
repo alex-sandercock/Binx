@@ -93,7 +93,7 @@ mod tests {
             ploidy: 2,
             sample_ids: vec!["S1".into(), "S2".into()],
             marker_ids: vec!["m1".into(), "m2".into()],
-            dosages: array![[-0.0, 2.0], [1.0, 1.0]],
+            dosages: array![[0.0, 2.0], [1.0, 1.0]],
         };
         let kin = compute_kinship_vanraden(&geno).unwrap();
         let file = NamedTempFile::new().unwrap();
