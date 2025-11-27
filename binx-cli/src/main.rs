@@ -41,6 +41,18 @@ enum Commands {
         #[arg(long)]
         kinship: Option<String>,
 
+        /// Allow dropping genotype samples that lack phenotypes
+        #[arg(long, default_value_t = false)]
+        allow_missing_samples: bool,
+
+        /// Optional environment column name to filter phenotype rows (e.g., env)
+        #[arg(long)]
+        env_column: Option<String>,
+
+        /// Environment value to keep (used with --env-column)
+        #[arg(long)]
+        env_value: Option<String>,
+
         /// Ploidy (e.g., 2, 4, 6)
         #[arg(long)]
         ploidy: u8,
@@ -90,6 +102,21 @@ enum Commands {
         #[arg(long)]
         out: String,
     },
+
+    /// Genotype dosage estimation from sequencing read counts
+    Dosage {
+        /// CSV file with alternating lines of Ref and Total counts per locus
+        #[arg(long)]
+        csv: String,
+
+        /// Ploidy (e.g., 2, 4, 6)
+        #[arg(long)]
+        ploidy: usize,
+
+        /// Enable verbose output
+        #[arg(long, default_value_t = false)]
+        verbose: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -103,6 +130,9 @@ fn main() -> Result<()> {
         covariates,
         pcs,
         kinship,
+        allow_missing_samples,
+        env_column,
+        env_value,
         ploidy,
         model,
         out,
@@ -115,6 +145,9 @@ fn main() -> Result<()> {
             covariate_list.as_deref(),
             pcs.as_deref(),
             kinship.as_deref(),
+            allow_missing_samples,
+            env_column.as_deref(),
+            env_value.as_deref(),
             ploidy,
             &model,
             &out,
@@ -145,6 +178,9 @@ fn main() -> Result<()> {
         }
         Commands::Kinship { geno, ploidy, out } => {
             binx_kinship::run_kinship(&geno, ploidy, &out)?;
+        }
+        Commands::Dosage { csv, ploidy, verbose } => {
+            binx_dosage::run_dosage(&csv, ploidy, verbose)?;
         }
     }
 

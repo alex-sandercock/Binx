@@ -4,6 +4,7 @@ use nalgebra::{DMatrix, DVector, SymmetricEigen};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs::File;
+use std::io::BufRead;
 use std::path::Path;
 
 pub type SampleId = String;
@@ -12,8 +13,9 @@ pub type MarkerId = String;
 /// Simple phenotype table: samples × (traits + covariates).
 pub struct PhenotypeTable {
     pub sample_ids: Vec<SampleId>,
-    pub traits: HashMap<String, Array1<f64>>, // trait_name -> y
-    pub covariates: HashMap<String, Array1<f64>>, // cov_name -> x
+    pub traits: HashMap<String, Array1<f64>>,       // numeric trait_name -> y
+    pub covariates: HashMap<String, Array1<f64>>,   // numeric cov_name -> x
+    pub factor_covariates: HashMap<String, Vec<String>>, // factor cov_name -> levels per observation
 }
 
 /// Biallelic dosage matrix: markers × samples, entries 0..ploidy.
@@ -32,190 +34,254 @@ pub struct KinshipMatrix {
     pub matrix: Array2<f64>,
 }
 
-/// Placeholder cache for mixed-model computations (Phase 3).
-/// Will hold transformed y/X and precomputed matrices for fast per-marker GLS.
+/// Cache for mixed-model computations.
 pub struct MixedModelCache {
-    pub sample_ids: Vec<SampleId>,
+    pub sample_ids: Vec<SampleId>, // matches y length (obs-level if Z provided)
+    pub n_obs: usize,
+    pub n_ind: usize,
     pub u: DMatrix<f64>,
     pub d_inv_sqrt: DVector<f64>,
+    pub h_inv: DMatrix<f64>,
     pub y_star: DVector<f64>,
     pub x0_star: DMatrix<f64>,
     pub xtx_inv: DMatrix<f64>,
     pub sigma2: f64,
     pub lambda: f64,
+    pub vu: f64,
+    pub ve: f64,
 }
 
-/// Phase 3 stub: fit null mixed model y ~ X0 with kinship K.
-/// Implements a simple grid-search REML over lambda = sigma_g^2 / sigma_e^2.
+/// Fit null mixed model y ~ X0 with kinship K, rrBLUP-style spectral REML.
+/// If `z` is provided, it is the incidence matrix (n_obs x n_ind). Otherwise, identity is assumed (n_obs must equal n_ind).
 pub fn fit_null_mixed_model(
     y: &Array1<f64>,
     x0: &Array2<f64>,
     kinship: &KinshipMatrix,
+    z: Option<&Array2<f64>>,
+    obs_ids: Option<&[SampleId]>,
 ) -> Result<MixedModelCache> {
-    let n = y.len();
-    if x0.nrows() != n {
+    let n_obs = y.len();
+    let p = x0.ncols();
+    if x0.nrows() != n_obs {
         return Err(anyhow!(
             "X0 rows ({}) do not match y length ({})",
             x0.nrows(),
-            n
+            n_obs
         ));
     }
-    if kinship.matrix.nrows() != n || kinship.matrix.ncols() != n {
-        return Err(anyhow!(
-            "Kinship matrix must be square with size equal to sample count ({})",
-            n
-        ));
-    }
-    let p = x0.ncols();
     if p == 0 {
         return Err(anyhow!("X0 must have at least one column (intercept)"));
     }
-    if n <= p {
+    if n_obs <= p {
         return Err(anyhow!(
-            "Not enough samples (n={}) for fixed effects (p={})",
-            n,
+            "Not enough samples (n_obs={}) for fixed effects (p={})",
+            n_obs,
             p
         ));
     }
 
-    let y_slice = y
-        .as_slice()
-        .ok_or_else(|| anyhow!("Trait array is not contiguous"))?;
-    let x_slice = x0
-        .as_slice()
-        .ok_or_else(|| anyhow!("Design matrix is not contiguous"))?;
-    let k_slice = kinship
-        .matrix
-        .as_slice()
-        .ok_or_else(|| anyhow!("Kinship matrix is not contiguous"))?;
+    let y_vec = DVector::from_row_slice(
+        y.as_slice()
+            .ok_or_else(|| anyhow!("Trait array is not contiguous"))?,
+    );
+    let x0_mat = DMatrix::from_row_slice(
+        n_obs,
+        p,
+        x0.as_slice()
+            .ok_or_else(|| anyhow!("Design matrix is not contiguous"))?,
+    );
 
-    let y_vec = DVector::from_row_slice(y_slice);
-    let x0_mat = DMatrix::from_row_slice(n, p, x_slice);
-    let k_mat = DMatrix::from_row_slice(n, n, k_slice);
+    // Build Z.
+    let n_ind = kinship.matrix.nrows();
+    if kinship.matrix.ncols() != n_ind {
+        return Err(anyhow!("Kinship matrix must be square"));
+    }
+    let z_mat = if let Some(z) = z {
+        if z.ncols() != n_ind {
+            return Err(anyhow!(
+                "Z columns ({}) do not match kinship size ({})",
+                z.ncols(),
+                n_ind
+            ));
+        }
+        if z.nrows() != n_obs {
+            return Err(anyhow!(
+                "Z rows ({}) do not match observation count ({})",
+                z.nrows(),
+                n_obs
+            ));
+        }
+        DMatrix::from_row_slice(z.nrows(), z.ncols(), z.as_slice().unwrap())
+    } else {
+        if n_ind != n_obs {
+            return Err(anyhow!(
+            "Kinship size ({}) does not match sample count ({})",
+            n_ind,
+            n_obs
+        ));
+    }
+        DMatrix::identity(n_obs, n_ind)
+    };
 
-    let eig = SymmetricEigen::new(k_mat);
-    let vals = eig.eigenvalues;
-    let u = eig.eigenvectors;
-    let y_t = u.transpose() * &y_vec;
-    let x_t = u.transpose() * &x0_mat;
+    // rrBLUP::mixed.solve eigen branch (used for REML/P3D and as fallback when Cholesky path fails)
+    let xtx = &x0_mat.transpose() * &x0_mat;
+    let xtx_inv = xtx
+        .try_inverse()
+        .ok_or_else(|| anyhow!("X0 not full rank"))?;
+    let s_mat = {
+        let i = DMatrix::<f64>::identity(n_obs, n_obs);
+        i - &x0_mat * (&xtx_inv * x0_mat.transpose())
+    };
 
-    // Grid search over log10(lambda) in [-4, 4]
-    let mut best_ll = f64::NEG_INFINITY;
-    let mut best_lambda = 0.0;
-    let mut best_sigma2 = None;
-
-    for step in 0..=32 {
-        let log10_lambda = -4.0 + (step as f64) * 0.25;
-        let lambda = 10f64.powf(log10_lambda);
-        if let Some((ll, sigma2)) = reml_loglik(lambda, &vals, &y_t, &x_t) {
-            if ll.is_finite() && ll > best_ll {
-                best_ll = ll;
-                best_lambda = lambda;
-                best_sigma2 = Some(sigma2);
-            }
+    let k_mat = DMatrix::from_row_slice(n_ind, n_ind, kinship.matrix.as_slice().unwrap());
+    // If n_obs > n_ind + p and K is PD with a small jitter, mirror mixed.solve's cholesky branch by dropping the offset.
+    let mut use_cholesky = false;
+    let mut k_work = k_mat.clone();
+    if n_obs > n_ind + p {
+        for i in 0..n_ind {
+            k_work[(i, i)] += 1e-6;
+        }
+        if k_work.clone().cholesky().is_some() {
+            use_cholesky = true;
+        } else {
+            k_work = k_mat.clone();
         }
     }
 
-    let sigma2 = best_sigma2
-        .ok_or_else(|| anyhow!("Failed to optimize REML for mixed model"))?;
+    let offset = if use_cholesky { 0.0 } else { (n_obs as f64).sqrt() };
+    let hb = {
+        let zk = &z_mat * &k_work;
+        let mut h = &zk * z_mat.transpose();
+        if offset > 0.0 {
+            for i in 0..n_obs {
+                h[(i, i)] += offset;
+            }
+        }
+        h
+    };
+    let hb_eig = SymmetricEigen::new(hb);
+    let phi: Vec<f64> = hb_eig
+        .eigenvalues
+        .iter()
+        .map(|v| *v - offset)
+        .collect();
+    if phi.iter().cloned().fold(f64::INFINITY, f64::min) < -1e-6 {
+        return Err(anyhow!("K not positive semi-definite (phi < 0)"));
+    }
+    let u = hb_eig.eigenvectors.clone();
 
-    let (_delta, d_inv_sqrt) = build_delta_inv_sqrt(best_lambda, &vals);
+    let shbs = &s_mat * hb_eig.eigenvectors.clone()
+        * DMatrix::from_diagonal(&DVector::from_row_slice(
+            &hb_eig
+                .eigenvalues
+                .iter()
+                .map(|v| *v)
+                .collect::<Vec<f64>>(),
+        ))
+        * hb_eig.eigenvectors.transpose()
+        * s_mat.transpose();
+    let shbs_eig = SymmetricEigen::new(shbs);
+    let n_theta = n_obs.saturating_sub(p);
+    let theta: Vec<f64> = shbs_eig
+        .eigenvalues
+        .iter()
+        .take(n_theta)
+        .map(|v| *v - offset)
+        .collect();
+    let q = shbs_eig.eigenvectors.columns(0, n_theta).into_owned();
+    let omega = q.transpose() * &y_vec;
+    let omega_sq: Vec<f64> = omega.iter().map(|v| v * v).collect();
 
-    // y* = D^-1/2 U^T y ; X0* = D^-1/2 U^T X0
+    let reml_obj = |lambda: f64| -> Option<f64> {
+        if lambda <= 0.0 {
+            return None;
+        }
+        let denom: f64 = omega_sq
+            .iter()
+            .zip(theta.iter())
+            .map(|(o, t)| o / (t + lambda))
+            .sum();
+        if denom <= 0.0 {
+            return None;
+        }
+        let term = theta.iter().map(|t| (t + lambda).ln()).sum::<f64>();
+        Some(((n_obs - p) as f64) * denom.ln() + term)
+    };
+
+    let (mut a, mut b) = (1e-9f64, 1e9f64);
+    let gr = 0.5 * (1.0 + 5f64.sqrt());
+    let mut c = b - (b - a) / gr;
+    let mut d = a + (b - a) / gr;
+    let mut fc = reml_obj(c).unwrap_or(f64::INFINITY);
+    let mut fd = reml_obj(d).unwrap_or(f64::INFINITY);
+    for _ in 0..120 {
+        if fc < fd {
+            b = d;
+            d = c;
+            fd = fc;
+            c = b - (b - a) / gr;
+            fc = reml_obj(c).unwrap_or(f64::INFINITY);
+        } else {
+            a = c;
+            c = d;
+            fc = fd;
+            d = a + (b - a) / gr;
+            fd = reml_obj(d).unwrap_or(f64::INFINITY);
+        }
+    }
+    let lambda_opt = if fc < fd { c } else { d };
+    let vu_opt = omega_sq
+        .iter()
+        .zip(theta.iter())
+        .map(|(o, t)| o / (t + lambda_opt))
+        .sum::<f64>()
+        / ((n_obs - p) as f64);
+    let ve_opt = lambda_opt * vu_opt;
+
+    let d_inv_vals: Vec<f64> = phi.iter().map(|v| 1.0 / (v + lambda_opt)).collect();
+    let d_inv_sqrt = DVector::from_iterator(
+        phi.len(),
+        phi.iter().map(|v| 1.0 / (v + lambda_opt).sqrt()),
+    );
+    let h_inv = {
+        let d_inv = DMatrix::from_diagonal(&DVector::from_row_slice(&d_inv_vals));
+        &u * d_inv * u.transpose()
+    };
+
+    let y_t = u.transpose() * &y_vec;
     let mut y_star = y_t.clone();
     elementwise_scale_vec(&mut y_star, &d_inv_sqrt);
 
+    let x_t = u.transpose() * &x0_mat;
     let mut x0_star = x_t.clone();
     elementwise_scale_rows(&mut x0_star, &d_inv_sqrt);
 
-    let xtx = &x0_star.transpose() * &x0_star;
-    let xtx_inv = xtx
+    let xtx_star = &x0_star.transpose() * &x0_star;
+    let xtx_inv = xtx_star
         .try_inverse()
         .ok_or_else(|| anyhow!("Failed to invert X0*^T X0*"))?;
 
+    let cache_sample_ids = if let Some(ids) = obs_ids {
+        ids.to_vec()
+    } else {
+        kinship.sample_ids.clone()
+    };
+
     Ok(MixedModelCache {
-        sample_ids: kinship.sample_ids.clone(),
+        sample_ids: cache_sample_ids,
+        n_obs,
+        n_ind,
         u,
         d_inv_sqrt,
+        h_inv,
         y_star,
         x0_star,
         xtx_inv,
-        sigma2,
-        lambda: best_lambda,
+        sigma2: ve_opt,
+        lambda: lambda_opt,
+        vu: vu_opt,
+        ve: ve_opt,
     })
-}
-
-fn build_delta_inv_sqrt(lambda: f64, vals: &DVector<f64>) -> (Vec<f64>, DVector<f64>) {
-    let mut delta = Vec::with_capacity(vals.len());
-    let mut inv_sqrt = Vec::with_capacity(vals.len());
-    for &d in vals.iter() {
-        let val = lambda * d + 1.0;
-        delta.push(val);
-        inv_sqrt.push(1.0 / val.sqrt());
-    }
-    let inv_sqrt_vec = DVector::from_row_slice(&inv_sqrt);
-    (delta, inv_sqrt_vec)
-}
-
-fn reml_loglik(
-    lambda: f64,
-    vals: &DVector<f64>,
-    y_t: &DVector<f64>,
-    x_t: &DMatrix<f64>,
-) -> Option<(f64, f64)> {
-    let n = y_t.len();
-    let p = x_t.ncols();
-    let mut delta = Vec::with_capacity(n);
-    let mut inv = Vec::with_capacity(n);
-    for &d in vals.iter() {
-        let v = lambda * d + 1.0;
-        delta.push(v);
-        inv.push(1.0 / v);
-    }
-
-    let (xt_dinv_x, xt_dinv_y, y_dinv_y) = accumulate_weighted_moments(x_t, y_t, &inv);
-    let lu = xt_dinv_x.lu();
-    if !lu.is_invertible() {
-        return None;
-    }
-    let beta = lu.solve(&xt_dinv_y)?;
-    let resid = y_dinv_y - xt_dinv_y.dot(&beta);
-    if resid <= 0.0 {
-        return None;
-    }
-    let sigma2 = resid / ((n - p) as f64);
-    if !sigma2.is_finite() || sigma2 <= 0.0 {
-        return None;
-    }
-    let logdet_xt = lu.determinant().abs().ln();
-    let logdet_delta: f64 = delta.iter().map(|v| v.ln()).sum();
-    let ll = -0.5 * (logdet_delta + logdet_xt + (n - p) as f64 * (sigma2.ln() + 1.0));
-    Some((ll, sigma2))
-}
-
-fn accumulate_weighted_moments(
-    x_t: &DMatrix<f64>,
-    y_t: &DVector<f64>,
-    inv: &[f64],
-) -> (DMatrix<f64>, DVector<f64>, f64) {
-    let n = y_t.len();
-    let p = x_t.ncols();
-    let mut xt_dinv_x = DMatrix::<f64>::zeros(p, p);
-    let mut xt_dinv_y = DVector::<f64>::zeros(p);
-    let mut y_dinv_y = 0.0;
-    for i in 0..n {
-        let w = inv[i];
-        let yv = y_t[i];
-        y_dinv_y += w * yv * yv;
-        for a in 0..p {
-            let xa = x_t[(i, a)];
-            xt_dinv_y[a] += w * xa * yv;
-            for b in 0..p {
-                xt_dinv_x[(a, b)] += w * xa * x_t[(i, b)];
-            }
-        }
-    }
-    (xt_dinv_x, xt_dinv_y, y_dinv_y)
 }
 
 fn elementwise_scale_vec(v: &mut DVector<f64>, scale: &DVector<f64>) {
@@ -253,52 +319,101 @@ struct PhenoRow {
 /// Phase 1: load phenotypes from a TSV.
 /// Assumes first column is sample_id, others numeric.
 pub fn load_phenotypes_from_tsv<P: AsRef<Path>>(path: P) -> Result<PhenotypeTable> {
-    let file = File::open(path)?;
-    let mut rdr = csv::ReaderBuilder::new().delimiter(b'\t').from_reader(file);
+    load_phenotypes_internal(path, None)
+}
+
+/// Phase 1: load phenotypes with optional row filter on a column/value (e.g., env).
+pub fn load_phenotypes_filtered<P: AsRef<Path>>(
+    path: P,
+    filter_column: Option<&str>,
+    filter_value: Option<&str>,
+) -> Result<PhenotypeTable> {
+    load_phenotypes_internal(path, filter_column.zip(filter_value))
+}
+
+fn load_phenotypes_internal<P: AsRef<Path>>(
+    path: P,
+    filter: Option<(&str, &str)>,
+) -> Result<PhenotypeTable> {
+    let delim = detect_delimiter(&path)?;
+    let mut rdr = csv::ReaderBuilder::new()
+        .delimiter(delim)
+        .from_path(&path)?;
 
     let headers = rdr.headers()?.clone();
     let col_names: Vec<String> = headers.iter().map(|s| s.to_string()).collect();
 
-    // First column is sample_id; the rest are numeric.
+    let filter_idx = if let Some((col, _)) = filter {
+        headers
+            .iter()
+            .position(|h| h == col)
+            .ok_or_else(|| anyhow!("Filter column '{}' not found in phenotype file", col))?
+    } else {
+        usize::MAX
+    };
+
+    // First column is sample_id/id; the rest are numeric.
     let value_cols: Vec<String> = col_names.iter().skip(1).cloned().collect();
 
     let mut sample_ids = Vec::new();
-    let mut columns: HashMap<String, Vec<f64>> = value_cols
+    let mut raw_columns: HashMap<String, Vec<String>> = value_cols
         .iter()
         .map(|name| (name.clone(), Vec::new()))
         .collect();
 
     for result in rdr.records() {
         let record = result?;
+        if let Some((_, filter_val)) = filter {
+            if record
+                .get(filter_idx)
+                .map(|v| v != filter_val)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+        }
         let sample_id = record.get(0).unwrap().to_string();
         sample_ids.push(sample_id);
 
         for (i, col_name) in value_cols.iter().enumerate() {
             let val_str = record.get(i + 1).unwrap();
-            let val: f64 = val_str.parse().map_err(|e| {
-                anyhow!(
-                    "Failed to parse value '{}' in column '{}': {}",
-                    val_str,
-                    col_name,
-                    e
-                )
-            })?;
-            columns.get_mut(col_name).unwrap().push(val);
+            raw_columns
+                .get_mut(col_name)
+                .unwrap()
+                .push(val_str.to_string());
         }
     }
 
     let mut traits = HashMap::new();
-    let covariates = HashMap::new(); // fill later if you want to distinguish
+    let mut covariates = HashMap::new();
+    let mut factor_covariates = HashMap::new();
 
-    for (name, vals) in columns {
-        let arr = Array1::from(vals);
-        traits.insert(name, arr);
+    for (name, vals) in raw_columns.into_iter() {
+        let mut numeric_vals = Vec::with_capacity(vals.len());
+        let mut all_numeric = true;
+        for v in &vals {
+            match v.parse::<f64>() {
+                Ok(val) => numeric_vals.push(val),
+                Err(_) => {
+                    all_numeric = false;
+                    break;
+                }
+            }
+        }
+        if all_numeric {
+            let arr = Array1::from(numeric_vals);
+            traits.insert(name.clone(), arr.clone());
+            covariates.insert(name, arr);
+        } else {
+            factor_covariates.insert(name, vals);
+        }
     }
 
     Ok(PhenotypeTable {
         sample_ids,
         traits,
         covariates,
+        factor_covariates,
     })
 }
 
@@ -309,11 +424,19 @@ pub fn load_genotypes_biallelic_from_tsv<P: AsRef<Path>>(
     path: P,
     ploidy: u8,
 ) -> Result<GenotypeMatrixBiallelic> {
-    let file = File::open(path)?;
-    let mut rdr = csv::ReaderBuilder::new().delimiter(b'\t').from_reader(file);
+    let delim = detect_delimiter(&path)?;
+    let mut rdr = csv::ReaderBuilder::new()
+        .delimiter(delim)
+        .from_path(&path)?;
 
     let headers = rdr.headers()?.clone();
     let header_strings: Vec<String> = headers.iter().map(|s| s.to_string()).collect();
+
+    if headers.len() < 4 {
+        return Err(anyhow!(
+            "Genotype file needs at least 4 columns: marker_id, chr, pos, <samples...>"
+        ));
+    }
 
     // Assume first 3 columns are marker metadata: id, chr, pos.
     // Sample IDs start at index 3.
@@ -360,8 +483,8 @@ pub fn load_genotypes_biallelic_from_tsv<P: AsRef<Path>>(
 /// Expecting:
 /// sample_id  S1  S2  S3 ...
 pub fn load_kinship_from_tsv<P: AsRef<Path>>(path: P) -> Result<KinshipMatrix> {
-    let file = File::open(path)?;
-    let mut rdr = csv::ReaderBuilder::new().delimiter(b'\t').from_reader(file);
+    let delim = detect_delimiter(&path)?;
+    let mut rdr = csv::ReaderBuilder::new().delimiter(delim).from_path(&path)?;
 
     let headers = rdr.headers()?.clone();
     let header_strings: Vec<String> = headers.iter().map(|s| s.to_string()).collect();
@@ -396,7 +519,6 @@ pub fn load_kinship_from_tsv<P: AsRef<Path>>(path: P) -> Result<KinshipMatrix> {
         matrix: mat,
     })
 }
-
 
 /// Phase 2: load PCs from TSV.
 /// Expecting rows of: sample_id  PC1  PC2 ...
@@ -503,5 +625,20 @@ mod tests {
         assert_eq!(pcs.sample_ids, vec!["S1", "S2"]);
         assert_eq!(pcs.pcs.shape(), &[2, 2]);
         assert_eq!(pcs.pcs[[0, 1]], 0.2);
+    }
+}
+
+/// Detect delimiter as tab or comma from the first non-empty line.
+fn detect_delimiter<P: AsRef<Path>>(path: P) -> Result<u8> {
+    let file = File::open(path.as_ref())?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut first_line = String::new();
+    reader.read_line(&mut first_line)?;
+    let tabs = first_line.matches('\t').count();
+    let commas = first_line.matches(',').count();
+    if commas > tabs {
+        Ok(b',')
+    } else {
+        Ok(b'\t')
     }
 }

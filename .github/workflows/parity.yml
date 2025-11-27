@@ -1,0 +1,70 @@
+name: Parity (GWASpoly vs binx gwas)
+
+on:
+  workflow_dispatch:
+    inputs:
+      enable_parity:
+        description: "Run GWASpoly parity tests (requires data + R deps)"
+        required: true
+        default: "false"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  parity:
+    if: ${{ github.event.inputs.enable_parity == 'true' }}
+    runs-on: ubuntu-latest
+    env:
+      BINX_PARITY: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - name: Install R dependencies (GWASpoly)
+        run: |
+          set -euxo pipefail
+          Rscript -e "if (!requireNamespace('remotes', quietly=TRUE)) install.packages('remotes')"
+          Rscript -e "if (!requireNamespace('GWASpoly', quietly=TRUE)) remotes::install_github('jendelman/GWASpoly')"
+
+      - name: Generate GWASpoly fixtures (toy)
+        run: |
+          set -euxo pipefail
+          if [ -f tests/parity/data/toy/toy.geno.tsv ] && [ -f tests/parity/data/toy/toy.pheno.tsv ]; then
+            Rscript scripts/gwaspoly/run_parity.R \
+              --geno=tests/parity/data/toy/toy.geno.tsv \
+              --pheno=tests/parity/data/toy/toy.pheno.tsv \
+              --trait=Trait1 \
+              --ploidy=4 \
+              --models=additive \
+              --out=tests/parity/fixtures/toy_additive.tsv
+          else
+            echo "Toy data not found; skipping fixture generation"
+          fi
+
+      - name: Generate GWASpoly fixtures (potato)
+        run: |
+          set -euxo pipefail
+          if [ -f tests/parity/data/potato/new_potato_geno.csv ] && [ -f tests/parity/data/potato/new_potato_pheno.csv ]; then
+            Rscript scripts/gwaspoly/run_parity.R \
+              --geno=tests/parity/data/potato/new_potato_geno.csv \
+              --pheno=tests/parity/data/potato/new_potato_pheno.csv \
+              --trait=vine.maturity \
+              --ploidy=4 \
+              --fixed=env \
+              --fixed_type=factor \
+              --models=additive \
+              --out=tests/parity/fixtures/potato_additive_env.tsv
+          else
+            echo "Potato data not found; skipping fixture generation"
+          fi
+
+      - name: Run parity tests
+        run: cargo test -p binx-cli parity -- --nocapture
