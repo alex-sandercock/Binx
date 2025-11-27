@@ -1,5 +1,5 @@
 
-# Binx <img src="docs/assets/binx-logo.png" align="right" width="250"/>
+# Binx <img src="docs/assets/binx-logo.png" align="right" width="150"/>
 
 Rust command-line genomics workbench for diploid and polyploid species. `binx` targets GWAS-style analyses with a familiar UX: fast defaults, explicit inputs, and clear TSV outputs.
 
