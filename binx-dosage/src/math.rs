@@ -11,15 +11,17 @@ use statrs::function::gamma::ln_gamma;
 pub fn prob_ref_read(k: usize, ploidy: usize, epsilon: f64, bias: f64) -> f64 {
     // 1. Dosage proportion
     let p = k as f64 / ploidy as f64;
-    
-    // 2. Apply Sequencing Error (f)
-    // f = p(1-e) + (1-p)e
-    let f = p * (1.0 - epsilon) + (1.0 - p) * epsilon;
 
-    // 3. Apply Bias (xi) via Odds Ratio
-    // xi = (f * h) / (f * h + (1 - f))
-    let term = f * bias;
-    term / (term + (1.0 - f))
+    // 2. Apply sequencing error (eta = p(1-e) + (1-p)e)
+    let eta = p * (1.0 - epsilon) + (1.0 - p) * epsilon;
+
+    // 3. Apply bias to match Updog's xi_double:
+    // xi = eta / (h * (1 - eta) + eta)
+    let denom = bias * (1.0 - eta) + eta;
+    if denom <= 0.0 {
+        return 0.0;
+    }
+    eta / denom
 }
 
 /// Log PDF of the Beta-Binomial Distribution
@@ -85,4 +87,17 @@ pub fn discretized_normal_probs(mu: f64, sigma: f64, ploidy: usize) -> Vec<f64> 
 
     let denom = log_sum_exp(&log_probs);
     log_probs.iter().map(|lp| (lp - denom).exp()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prob_ref_read;
+
+    #[test]
+    fn prob_ref_read_matches_updog_form() {
+        // With eta = 0.5, xi = eta / (h * (1 - eta) + eta) = 1 / (h + 1).
+        let xi = prob_ref_read(1, 2, 0.01, 0.5);
+        let expected = 1.0 / 1.5;
+        assert!((xi - expected).abs() < 1e-9);
+    }
 }
