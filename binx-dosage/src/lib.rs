@@ -4,6 +4,9 @@ pub mod model;
 
 use ndarray::Array1;
 
+// Re-export FitMode for CLI usage
+pub use model::FitMode;
+
 /// Represents the result of a genotyping run for a single locus
 #[derive(Debug, Clone)]
 pub struct GenotypeResult {
@@ -22,14 +25,16 @@ pub fn run_norm_model(
     ref_counts: &Array1<u32>,
     total_counts: &Array1<u32>,
     ploidy: usize,
+    mode: FitMode,
 ) -> anyhow::Result<GenotypeResult> {
-    model::norm::fit_norm(ref_counts, total_counts, ploidy)
+    model::fit_norm_with_mode(ref_counts, total_counts, ploidy, mode)
 }
 
 /// Top-level entry point used by the CLI for genotype dosage estimation.
 pub fn run_dosage(
     csv_file: &str,
     ploidy: usize,
+    mode: FitMode,
     verbose: bool,
 ) -> anyhow::Result<()> {
     if verbose {
@@ -47,7 +52,7 @@ pub fn run_dosage(
     }
 
     for locus in loci {
-        match run_norm_model(&locus.ref_counts, &locus.total_counts, ploidy) {
+        match run_norm_model(&locus.ref_counts, &locus.total_counts, ploidy, mode) {
             Ok(mut res) => {
                 res.locus_id = locus.id;
 

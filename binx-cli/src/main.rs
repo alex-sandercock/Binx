@@ -113,6 +113,10 @@ enum Commands {
         #[arg(long)]
         ploidy: usize,
 
+        /// Multi-start optimization mode (auto, updog, fast)
+        #[arg(long, default_value = "auto")]
+        mode: String,
+
         /// Enable verbose output
         #[arg(long, default_value_t = false)]
         verbose: bool,
@@ -179,8 +183,17 @@ fn main() -> Result<()> {
         Commands::Kinship { geno, ploidy, out } => {
             binx_kinship::run_kinship(&geno, ploidy, &out)?;
         }
-        Commands::Dosage { csv, ploidy, verbose } => {
-            binx_dosage::run_dosage(&csv, ploidy, verbose)?;
+        Commands::Dosage { csv, ploidy, mode, verbose } => {
+            let fit_mode = match mode.as_str() {
+                "auto" => binx_dosage::FitMode::Auto,
+                "updog" => binx_dosage::FitMode::Updog,
+                "fast" => binx_dosage::FitMode::Fast,
+                _ => {
+                    eprintln!("Invalid mode: {}. Use 'auto', 'updog', or 'fast'", mode);
+                    std::process::exit(1);
+                }
+            };
+            binx_dosage::run_dosage(&csv, ploidy, fit_mode, verbose)?;
         }
     }
 
