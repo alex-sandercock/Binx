@@ -5,6 +5,7 @@ members = [
     "binx-multigwas",
     "binx-kinship",
     "binx-cli",
+    "binx-dosage",
 ]
 
 resolver = "2"

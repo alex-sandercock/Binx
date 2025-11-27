@@ -102,6 +102,21 @@ enum Commands {
         #[arg(long)]
         out: String,
     },
+
+    /// Genotype dosage estimation from sequencing read counts
+    Dosage {
+        /// CSV file with alternating lines of Ref and Total counts per locus
+        #[arg(long)]
+        csv: String,
+
+        /// Ploidy (e.g., 2, 4, 6)
+        #[arg(long)]
+        ploidy: usize,
+
+        /// Enable verbose output
+        #[arg(long, default_value_t = false)]
+        verbose: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -163,6 +178,9 @@ fn main() -> Result<()> {
         }
         Commands::Kinship { geno, ploidy, out } => {
             binx_kinship::run_kinship(&geno, ploidy, &out)?;
+        }
+        Commands::Dosage { csv, ploidy, verbose } => {
+            binx_dosage::run_dosage(&csv, ploidy, verbose)?;
         }
     }
 
