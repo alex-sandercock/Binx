@@ -133,6 +133,10 @@ enum Commands {
         #[arg(long)]
         threads: Option<usize>,
 
+        /// Output path (defaults to stdout)
+        #[arg(long)]
+        output: Option<String>,
+
         /// Ploidy (e.g., 2, 4, 6)
         #[arg(long)]
         ploidy: usize,
@@ -140,6 +144,14 @@ enum Commands {
         /// Multi-start optimization mode (auto, updog, updog-fast, updog-exact, fast)
         #[arg(long, default_value = "auto")]
         mode: String,
+
+        /// Output format (matrix, stats, beagle, vcf, plink, gwaspoly)
+        #[arg(long, default_value = "matrix")]
+        format: String,
+
+        /// Compression mode (none, gzip)
+        #[arg(long, default_value = "none")]
+        compress: String,
 
         /// Enable verbose output
         #[arg(long, default_value_t = false)]
@@ -207,7 +219,7 @@ fn main() -> Result<()> {
         Commands::Kinship { geno, ploidy, out } => {
             binx_kinship::run_kinship(&geno, ploidy, &out)?;
         }
-        Commands::Dosage { csv, counts, ref_path, total_path, vcf, chunk_size, threads, ploidy, mode, verbose } => {
+        Commands::Dosage { csv, counts, ref_path, total_path, vcf, chunk_size, threads, output, ploidy, mode, format, compress, verbose } => {
             let fit_mode = match mode.as_str() {
                 "auto" => binx_dosage::FitMode::Auto,
                 "updog" => binx_dosage::FitMode::Updog,
@@ -216,6 +228,26 @@ fn main() -> Result<()> {
                 "fast" => binx_dosage::FitMode::Fast,
                 _ => {
                     eprintln!("Invalid mode: {}. Use 'auto', 'updog', 'updog-fast', 'updog-exact', or 'fast'", mode);
+                    std::process::exit(1);
+                }
+            };
+            let output_format = match format.as_str() {
+                "matrix" => binx_dosage::OutputFormat::Matrix,
+                "stats" => binx_dosage::OutputFormat::Stats,
+                "beagle" => binx_dosage::OutputFormat::Beagle,
+                "vcf" => binx_dosage::OutputFormat::Vcf,
+                "plink" => binx_dosage::OutputFormat::PlinkRaw,
+                "gwaspoly" => binx_dosage::OutputFormat::GwasPoly,
+                _ => {
+                    eprintln!("Invalid format: {}. Use 'matrix', 'stats', 'beagle', 'vcf', 'plink', or 'gwaspoly'", format);
+                    std::process::exit(1);
+                }
+            };
+            let compress_mode = match compress.as_str() {
+                "none" => binx_dosage::CompressMode::None,
+                "gzip" => binx_dosage::CompressMode::Gzip,
+                _ => {
+                    eprintln!("Invalid compress: {}. Use 'none' or 'gzip'", compress);
                     std::process::exit(1);
                 }
             };
@@ -252,7 +284,16 @@ fn main() -> Result<()> {
                 });
                 binx_dosage::InputSource::TwoLineCsv(csv_path)
             };
-            binx_dosage::run_dosage(input, ploidy, fit_mode, verbose, threads)?;
+            binx_dosage::run_dosage(
+                input,
+                ploidy,
+                fit_mode,
+                verbose,
+                threads,
+                output.as_deref(),
+                output_format,
+                compress_mode,
+            )?;
         }
     }
 

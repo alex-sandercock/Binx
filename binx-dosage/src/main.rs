@@ -5,11 +5,11 @@ fn main() -> anyhow::Result<()> {
     let argv: Vec<String> = env::args().skip(1).collect();
     if argv.is_empty() {
         eprintln!("Usage:");
-        eprintln!("  binx-dosage <csv_file> <ploidy> [--mode <auto|updog|updog-fast|updog-exact|fast>] [--verbose]");
+        eprintln!("  binx-dosage <csv_file> <ploidy> [--mode <auto|updog|updog-fast|updog-exact|fast>] [--format <matrix|stats|beagle|vcf|plink|gwaspoly>] [--compress <none|gzip>] [--threads N] [--output <path>] [--verbose]");
         eprintln!("    CSV Format: Alternating lines of Ref counts and Total counts per locus.");
-        eprintln!("  binx-dosage --counts --ref-path <ref_matrix.csv> --total-path <total_matrix.csv> <ploidy> [--mode ...] [--verbose]");
+        eprintln!("  binx-dosage --counts --ref-path <ref_matrix.csv> --total-path <total_matrix.csv> <ploidy> [--mode ...] [--format ...] [--compress ...] [--threads N] [--output <path>] [--verbose]");
         eprintln!("    Matrix Format: markers in rows, samples in columns; first column is marker ID, header row has samples.");
-        eprintln!("  binx-dosage --vcf <file.vcf[.gz]> <ploidy> [--chunk-size N] [--mode ...] [--verbose]");
+        eprintln!("  binx-dosage --vcf <file.vcf[.gz]> <ploidy> [--chunk-size N] [--mode ...] [--format ...] [--compress ...] [--threads N] [--output <path>] [--verbose]");
         eprintln!("    VCF Format: uses FORMAT/AD (allele depths) per sample; streaming and gzipped supported.");
         eprintln!();
         eprintln!("Options:");
@@ -18,7 +18,11 @@ fn main() -> anyhow::Result<()> {
         eprintln!("  --mode updog-fast Hybrid sprint with 5 Updog starts (faster, still thorough)");
         eprintln!("  --mode updog-exact Full validation with relaxed bounds matching Updog");
         eprintln!("  --mode fast     Single start at bias=1.0 (fastest)");
-        eprintln!("  --chunk-size N  Process VCF records in batches of N (default: stream one by one)");
+        eprintln!("  --format matrix | stats | beagle | vcf | plink | gwaspoly (default: matrix)");
+        eprintln!("  --compress none | gzip (default: none)");
+        eprintln!("  --chunk-size N  Process VCF records in batches of N (default: 256; set 0 to stream one by one)");
+        eprintln!("  --threads N     Limit Rayon worker threads (default: Rayon chooses)");
+        eprintln!("  --output PATH   Write results to PATH instead of stdout");
         eprintln!("  --verbose       Print detailed progress");
         std::process::exit(1);
     }
@@ -29,9 +33,13 @@ fn main() -> anyhow::Result<()> {
     let mut vcf_path: Option<String> = None;
     let mut ploidy: Option<usize> = None;
     let mut mode: FitMode = FitMode::Auto;
+    let mut format = binx_dosage::OutputFormat::Matrix;
+    let mut compress = binx_dosage::CompressMode::None;
     let mut verbose = false;
     let mut counts_mode = false;
     let mut chunk_size: Option<usize> = None;
+    let mut threads: Option<usize> = None;
+    let mut output: Option<String> = None;
 
     let mut idx = 0;
     while idx < argv.len() {
@@ -98,6 +106,59 @@ fn main() -> anyhow::Result<()> {
                 }));
                 idx += 2;
             }
+            "--threads" => {
+                if idx + 1 >= argv.len() {
+                    eprintln!("--threads requires an integer argument");
+                    std::process::exit(1);
+                }
+                threads = Some(argv[idx + 1].parse().unwrap_or_else(|_| {
+                    eprintln!("Invalid threads value: {}", argv[idx + 1]);
+                    std::process::exit(1);
+                }));
+                idx += 2;
+            }
+            "--format" => {
+                if idx + 1 >= argv.len() {
+                    eprintln!("--format requires an argument");
+                    std::process::exit(1);
+                }
+                format = match argv[idx + 1].as_str() {
+                    "matrix" => binx_dosage::OutputFormat::Matrix,
+                    "stats" => binx_dosage::OutputFormat::Stats,
+                    "beagle" => binx_dosage::OutputFormat::Beagle,
+                    "vcf" => binx_dosage::OutputFormat::Vcf,
+                    "plink" => binx_dosage::OutputFormat::PlinkRaw,
+                    "gwaspoly" => binx_dosage::OutputFormat::GwasPoly,
+                    other => {
+                        eprintln!("Invalid format: {}", other);
+                        std::process::exit(1);
+                    }
+                };
+                idx += 2;
+            }
+            "--compress" => {
+                if idx + 1 >= argv.len() {
+                    eprintln!("--compress requires an argument");
+                    std::process::exit(1);
+                }
+                compress = match argv[idx + 1].as_str() {
+                    "none" => binx_dosage::CompressMode::None,
+                    "gzip" => binx_dosage::CompressMode::Gzip,
+                    other => {
+                        eprintln!("Invalid compress: {}", other);
+                        std::process::exit(1);
+                    }
+                };
+                idx += 2;
+            }
+            "--output" => {
+                if idx + 1 >= argv.len() {
+                    eprintln!("--output requires a path argument");
+                    std::process::exit(1);
+                }
+                output = Some(argv[idx + 1].clone());
+                idx += 2;
+            }
             other => {
                 // Positional arguments: first non-flag is CSV (legacy) or ploidy
                 if csv_file.is_none() && !counts_mode {
@@ -152,5 +213,5 @@ fn main() -> anyhow::Result<()> {
         InputSource::TwoLineCsv(csv)
     };
 
-    run_dosage(input, ploidy, mode, verbose)
+    run_dosage(input, ploidy, mode, verbose, threads, output.as_deref(), format, compress)
 }

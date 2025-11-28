@@ -2,9 +2,16 @@ use ndarray::{Array1, Array2};
 
 pub mod matrix;
 pub mod vcf;
+pub mod output;
 
 #[cfg(feature = "bcf")]
 pub mod bcf;
+
+/// Two-line CSV (legacy) now returns both sample names and loci.
+pub struct TwoLineData {
+    pub sample_names: Vec<String>,
+    pub loci: Vec<LocusData>,
+}
 
 /// CSV/two-line inputs produce per-locus data in this shape.
 #[derive(Debug, Clone)]
@@ -12,11 +19,17 @@ pub struct LocusData {
     pub id: String,
     pub ref_counts: Array1<u32>,
     pub total_counts: Array1<u32>,
+    /// VCF metadata (only present when source is VCF)
+    pub vcf_chrom: Option<String>,
+    pub vcf_pos: Option<u64>,
+    pub vcf_ref: Option<String>,
+    pub vcf_alt: Option<String>,
 }
 
 /// Matrix inputs (markers x samples).
 pub struct MatrixData {
     pub marker_ids: Vec<String>,
+    pub sample_names: Vec<String>,
     pub ref_counts: Array2<u32>,
     pub total_counts: Array2<u32>,
 }
@@ -26,6 +39,11 @@ pub struct VcfRecordCounts {
     pub id: String,
     pub ref_counts: Array1<u32>,
     pub total_counts: Array1<u32>,
+    /// VCF metadata
+    pub chrom: String,
+    pub pos: u64,
+    pub ref_allele: String,
+    pub alt_allele: String,
 }
 
 pub use matrix::{parse_ref_total_matrices, parse_two_line_csv};

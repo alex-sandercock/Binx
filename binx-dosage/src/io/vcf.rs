@@ -147,7 +147,10 @@ fn parse_record_line(
     }
 
     let chrom = parts[0];
-    let pos = parts[1];
+    let pos_str = parts[1];
+    let id = parts[2];
+    let ref_allele = parts[3];
+    let alt_allele = parts[4];
     let format_str = parts[8];
     let sample_fields = &parts[9..];
 
@@ -208,23 +211,38 @@ fn parse_record_line(
         return Ok(None);
     }
 
-    let locus_id = format!("{}:{}", chrom, pos);
+    // Parse position as integer
+    let pos: u64 = pos_str.parse().unwrap_or(0);
+
+    // Use VCF ID field if present and not ".", otherwise use chrom:pos
+    let locus_id = if id == "." {
+        format!("{}:{}", chrom, pos)
+    } else {
+        id.to_string()
+    };
+
     Ok(Some(VcfRecordCounts {
         id: locus_id,
         ref_counts: Array1::from(ref_counts),
         total_counts: Array1::from(total_counts),
+        chrom: chrom.to_string(),
+        pos,
+        ref_allele: ref_allele.to_string(),
+        alt_allele: alt_allele.to_string(),
     }))
 }
 
 /// Stream VCF records using a fast text parser (supports stdin, gzip/bgzip).
 /// AD is preferred; if missing, RA+DP is used. Invalid fields warn by default.
-pub fn stream_vcf_records_with_config<F>(
+pub fn stream_vcf_records_with_config<F, H>(
     path: &str,
+    mut on_header: H,
     mut on_record: F,
     config: VcfStreamConfig,
 ) -> Result<(), Box<dyn Error>>
 where
     F: FnMut(VcfRecordCounts),
+    H: FnMut(&[String]),
 {
     let mut reader = vcf_reader(path)?;
     let mut line = String::with_capacity(8192);
@@ -241,11 +259,13 @@ where
             continue;
         }
         if trimmed.starts_with("#CHROM") {
-            let cols = trimmed.split('\t').count();
-            if cols < 9 {
+            let parts: Vec<&str> = trimmed.split('\t').collect();
+            if parts.len() < 9 {
                 warn_or_err(config.strict, "Header has fewer than 9 columns")?;
             } else {
-                sample_count = cols.checked_sub(9);
+                let names: Vec<String> = parts[9..].iter().map(|s| s.to_string()).collect();
+                sample_count = Some(names.len());
+                on_header(&names);
             }
             continue;
         }
@@ -260,9 +280,10 @@ where
 }
 
 /// Default configuration: non-strict, no depth filtering.
-pub fn stream_vcf_records<F>(path: &str, on_record: F) -> Result<(), Box<dyn Error>>
+pub fn stream_vcf_records<F, H>(path: &str, on_header: H, on_record: F) -> Result<(), Box<dyn Error>>
 where
     F: FnMut(VcfRecordCounts),
+    H: FnMut(&[String]),
 {
-    stream_vcf_records_with_config(path, on_record, VcfStreamConfig::default())
+    stream_vcf_records_with_config(path, on_header, on_record, VcfStreamConfig::default())
 }
