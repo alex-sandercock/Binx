@@ -121,6 +121,18 @@ enum Commands {
         #[arg(long)]
         total_path: Option<String>,
 
+        /// VCF file (plain or gzipped) with FORMAT/AD allele depths
+        #[arg(long)]
+        vcf: Option<String>,
+
+        /// Chunk size for streaming VCF markers (0 or omit = stream one by one)
+        #[arg(long)]
+        chunk_size: Option<usize>,
+
+        /// Number of threads to use for parallel dosage (default: num_cpus)
+        #[arg(long)]
+        threads: Option<usize>,
+
         /// Ploidy (e.g., 2, 4, 6)
         #[arg(long)]
         ploidy: usize,
@@ -195,7 +207,7 @@ fn main() -> Result<()> {
         Commands::Kinship { geno, ploidy, out } => {
             binx_kinship::run_kinship(&geno, ploidy, &out)?;
         }
-        Commands::Dosage { csv, counts, ref_path, total_path, ploidy, mode, verbose } => {
+        Commands::Dosage { csv, counts, ref_path, total_path, vcf, chunk_size, threads, ploidy, mode, verbose } => {
             let fit_mode = match mode.as_str() {
                 "auto" => binx_dosage::FitMode::Auto,
                 "updog" => binx_dosage::FitMode::Updog,
@@ -207,13 +219,25 @@ fn main() -> Result<()> {
                     std::process::exit(1);
                 }
             };
-            let input = if counts {
+            let modes_selected = counts as u8 + (vcf.is_some() as u8) + (csv.is_some() as u8);
+            if modes_selected == 0 {
+                eprintln!("Provide one of: --csv, --counts (with --ref/--total), or --vcf");
+                std::process::exit(1);
+            }
+            if modes_selected > 1 {
+                eprintln!("Inputs are mutually exclusive: choose only one of --csv, --counts, or --vcf");
+                std::process::exit(1);
+            }
+
+            let input = if let Some(vcf_path) = vcf {
+                binx_dosage::InputSource::Vcf { path: vcf_path, chunk_size }
+            } else if counts {
                 let ref_path = ref_path.unwrap_or_else(|| {
-                    eprintln!("--counts requires --ref <path>");
+                    eprintln!("--counts requires --ref-path <path>");
                     std::process::exit(1);
                 });
                 let total_path = total_path.unwrap_or_else(|| {
-                    eprintln!("--counts requires --total <path>");
+                    eprintln!("--counts requires --total-path <path>");
                     std::process::exit(1);
                 });
                 if csv.is_some() {
@@ -223,12 +247,12 @@ fn main() -> Result<()> {
                 binx_dosage::InputSource::RefTotalMatrices { ref_path, total_path }
             } else {
                 let csv_path = csv.unwrap_or_else(|| {
-                    eprintln!("--csv is required unless --counts is set");
+                    eprintln!("--csv is required unless --counts or --vcf is set");
                     std::process::exit(1);
                 });
                 binx_dosage::InputSource::TwoLineCsv(csv_path)
             };
-            binx_dosage::run_dosage(input, ploidy, fit_mode, verbose)?;
+            binx_dosage::run_dosage(input, ploidy, fit_mode, verbose, threads)?;
         }
     }
 

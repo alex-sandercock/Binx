@@ -1,19 +1,10 @@
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+
 use ndarray::{Array1, Array2};
 
-pub struct LocusData {
-    pub id: String,
-    pub ref_counts: Array1<u32>,
-    pub total_counts: Array1<u32>,
-}
-
-pub struct MatrixData {
-    pub marker_ids: Vec<String>,
-    pub ref_counts: Array2<u32>,
-    pub total_counts: Array2<u32>,
-}
+use super::{LocusData, MatrixData};
 
 pub fn parse_two_line_csv(path: &str) -> Result<Vec<LocusData>, Box<dyn Error>> {
     let file = File::open(path)?;
@@ -25,12 +16,14 @@ pub fn parse_two_line_csv(path: &str) -> Result<Vec<LocusData>, Box<dyn Error>> 
 
     while let Some(line1_res) = lines.next() {
         let line1 = line1_res?;
-        if line1.trim().is_empty() { continue; }
-        
+        if line1.trim().is_empty() {
+            continue;
+        }
+
         if !header_skipped && (line1.contains("Ref") || line1.contains("sample")) {
-             let _ = lines.next();
-             header_skipped = true;
-             continue;
+            let _ = lines.next();
+            header_skipped = true;
+            continue;
         }
 
         let line2 = match lines.next() {
@@ -46,9 +39,12 @@ pub fn parse_two_line_csv(path: &str) -> Result<Vec<LocusData>, Box<dyn Error>> 
         }
 
         let id = parts1[0].to_string();
-        
+
         if parts1[0] != parts2[0] {
-            eprintln!("Warning: Locus ID mismatch between Ref and Total lines: {} vs {}", parts1[0], parts2[0]);
+            eprintln!(
+                "Warning: Locus ID mismatch between Ref and Total lines: {} vs {}",
+                parts1[0], parts2[0]
+            );
         }
 
         let refs: Result<Vec<u32>, _> = parts1[1..].iter().map(|s| s.parse::<u32>()).collect();
@@ -67,7 +63,11 @@ pub fn parse_two_line_csv(path: &str) -> Result<Vec<LocusData>, Box<dyn Error>> 
 }
 
 fn detect_delimiter(header_line: &str) -> char {
-    if header_line.contains('\t') { '\t' } else { ',' }
+    if header_line.contains('\t') {
+        '\t'
+    } else {
+        ','
+    }
 }
 
 /// Parse a matrix file with a header row (samples) and first column as marker IDs.
@@ -110,7 +110,8 @@ fn parse_matrix_file(path: &str) -> Result<(Vec<String>, Vec<Vec<u32>>, usize), 
                 path,
                 parts.len(),
                 expected_cols
-            ).into());
+            )
+            .into());
         }
         let id = parts[0].to_string();
         let counts: Result<Vec<u32>, _> = parts[1..].iter().map(|s| s.parse::<u32>()).collect();
@@ -127,7 +128,10 @@ fn parse_matrix_file(path: &str) -> Result<(Vec<String>, Vec<Vec<u32>>, usize), 
 }
 
 /// Parse paired ref/total matrices (markers in rows, samples in columns).
-pub fn parse_ref_total_matrices(ref_path: &str, total_path: &str) -> Result<MatrixData, Box<dyn Error>> {
+pub fn parse_ref_total_matrices(
+    ref_path: &str,
+    total_path: &str,
+) -> Result<MatrixData, Box<dyn Error>> {
     let (ref_ids, ref_rows, ref_samples) = parse_matrix_file(ref_path)?;
     let (tot_ids, tot_rows, tot_samples) = parse_matrix_file(total_path)?;
 
@@ -139,7 +143,9 @@ pub fn parse_ref_total_matrices(ref_path: &str, total_path: &str) -> Result<Matr
     }
     for (i, (rid, tid)) in ref_ids.iter().zip(tot_ids.iter()).enumerate() {
         if rid != tid {
-            return Err(format!("Marker ID mismatch at row {}: {} vs {}", i + 1, rid, tid).into());
+            return Err(
+                format!("Marker ID mismatch at row {}: {} vs {}", i + 1, rid, tid).into(),
+            );
         }
     }
 
