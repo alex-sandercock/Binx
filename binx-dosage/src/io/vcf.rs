@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
+use std::sync::Arc;
 
 use flate2::read::MultiGzDecoder;
 use ndarray::Array1;
@@ -137,22 +138,20 @@ fn parse_record_line(
     expected_samples: &mut Option<usize>,
     config: &VcfStreamConfig,
 ) -> Result<Option<VcfRecordCounts>, Box<dyn Error>> {
-    let parts: Vec<&str> = line.split('\t').collect();
-    if parts.len() < 9 {
-        warn_or_err(
-            config.strict,
-            &format!("Line has {} columns (expected >=9)", parts.len()),
-        )?;
-        return Ok(None);
-    }
+    // Parse fixed fields without allocating Vec
+    let mut fields = line.split('\t');
 
-    let chrom = parts[0];
-    let pos_str = parts[1];
-    let id = parts[2];
-    let ref_allele = parts[3];
-    let alt_allele = parts[4];
-    let format_str = parts[8];
-    let sample_fields = &parts[9..];
+    let chrom = fields.next().ok_or("Missing CHROM field")?;
+    let pos_str = fields.next().ok_or("Missing POS field")?;
+    let id = fields.next().ok_or("Missing ID field")?;
+    let ref_allele = fields.next().ok_or("Missing REF field")?;
+    let alt_allele = fields.next().ok_or("Missing ALT field")?;
+    let _qual = fields.next().ok_or("Missing QUAL field")?;
+    let _filter = fields.next().ok_or("Missing FILTER field")?;
+    let _info = fields.next().ok_or("Missing INFO field")?;
+    let format_str = fields.next().ok_or("Missing FORMAT field")?;
+
+    // Remaining fields are samples - process without collecting
 
     let (ad_idx, ra_idx, dp_idx) = format_indices(format_str);
     if ad_idx.is_none() && ra_idx.is_none() && dp_idx.is_none() {
@@ -160,28 +159,17 @@ fn parse_record_line(
         return Ok(None);
     }
 
-    if let Some(expected) = expected_samples {
-        if sample_fields.len() != *expected {
-            warn_or_err(
-                config.strict,
-                &format!(
-                    "Sample count mismatch (expected {}, got {})",
-                    expected,
-                    sample_fields.len()
-                ),
-            )?;
-            return Ok(None);
-        }
-    } else {
-        *expected_samples = Some(sample_fields.len());
-    }
-
-    let mut ref_counts = Vec::with_capacity(sample_fields.len());
-    let mut total_counts = Vec::with_capacity(sample_fields.len());
-    let mut valid_mask = Vec::with_capacity(sample_fields.len());
+    // Pre-allocate vectors if we know expected sample count
+    let initial_capacity = expected_samples.unwrap_or(100);
+    let mut ref_counts = Vec::with_capacity(initial_capacity);
+    let mut total_counts = Vec::with_capacity(initial_capacity);
+    let mut valid_mask = Vec::with_capacity(initial_capacity);
     let mut any_valid = false;
+    let mut sample_count = 0;
 
-    for sample_str in sample_fields {
+    // Process samples from iterator without collecting
+    for sample_str in fields {
+        sample_count += 1;
         match parse_sample(
             sample_str,
             ad_idx,
@@ -207,6 +195,23 @@ fn parse_record_line(
         }
     }
 
+    // Validate sample count matches expected
+    if let Some(expected) = expected_samples {
+        if sample_count != *expected {
+            warn_or_err(
+                config.strict,
+                &format!(
+                    "Sample count mismatch (expected {}, got {})",
+                    expected,
+                    sample_count
+                ),
+            )?;
+            return Ok(None);
+        }
+    } else {
+        *expected_samples = Some(sample_count);
+    }
+
     if !any_valid {
         return Ok(None);
     }
@@ -225,11 +230,41 @@ fn parse_record_line(
         id: locus_id,
         ref_counts: Array1::from(ref_counts),
         total_counts: Array1::from(total_counts),
-        chrom: chrom.to_string(),
+        chrom: Arc::new(chrom.to_string()),
         pos,
-        ref_allele: ref_allele.to_string(),
-        alt_allele: alt_allele.to_string(),
+        ref_allele: Arc::new(ref_allele.to_string()),
+        alt_allele: Arc::new(alt_allele.to_string()),
     }))
+}
+
+/// Quickly counts the number of data records in a VCF file (excluding headers).
+/// Used to enable progress bars with ETA.
+pub fn count_vcf_records(path: &str) -> Result<usize, Box<dyn Error>> {
+    let mut reader = vcf_reader(path)?;
+    let mut line = String::new();
+    let mut count = 0;
+    let mut in_header = true;
+
+    loop {
+        line.clear();
+        let bytes = reader.read_line(&mut line)?;
+        if bytes == 0 {
+            break;
+        }
+        let trimmed = line.trim_end_matches(&['\n', '\r'][..]);
+        if trimmed.is_empty() {
+            continue;
+        }
+        if in_header {
+            if trimmed.starts_with("#") {
+                continue;
+            } else {
+                in_header = false;
+            }
+        }
+        count += 1;
+    }
+    Ok(count)
 }
 
 /// Stream VCF records using a fast text parser (supports stdin, gzip/bgzip).
@@ -239,14 +274,15 @@ pub fn stream_vcf_records_with_config<F, H>(
     mut on_header: H,
     mut on_record: F,
     config: VcfStreamConfig,
-) -> Result<(), Box<dyn Error>>
+)-> Result<(), Box<dyn Error>>
 where
     F: FnMut(VcfRecordCounts),
     H: FnMut(&[String]),
 {
     let mut reader = vcf_reader(path)?;
-    let mut line = String::with_capacity(8192);
+    let mut line = String::with_capacity(8192); // Start with default, will resize after header
     let mut sample_count: Option<usize> = None;
+    let mut line_sized = false;
 
     loop {
         line.clear();
@@ -259,14 +295,38 @@ where
             continue;
         }
         if trimmed.starts_with("#CHROM") {
-            let parts: Vec<&str> = trimmed.split('\t').collect();
-            if parts.len() < 9 {
-                warn_or_err(config.strict, "Header has fewer than 9 columns")?;
-            } else {
-                let names: Vec<String> = parts[9..].iter().map(|s| s.to_string()).collect();
-                sample_count = Some(names.len());
-                on_header(&names);
+            // Parse header without collecting all fields into Vec
+            let mut header_fields = trimmed.split('\t');
+
+            // Skip first 9 fixed column headers
+            let mut valid_header = true;
+            for _ in 0..9 {
+                if header_fields.next().is_none() {
+                    warn_or_err(config.strict, "Header has fewer than 9 columns")?;
+                    valid_header = false;
+                    break;
+                }
             }
+
+            if !valid_header {
+                continue;
+            }
+
+            // Collect only sample names (not all fields)
+            let names: Vec<String> = header_fields.map(|s| s.to_string()).collect();
+            sample_count = Some(names.len());
+
+            // Resize line buffer based on expected line size
+            // Formula: ~100 bytes for fixed fields + (samples * 20 bytes average per sample field)
+            if !line_sized && names.len() > 0 {
+                let expected_line_size = 100 + (names.len() * 20);
+                if expected_line_size > line.capacity() {
+                    line.reserve(expected_line_size - line.capacity());
+                }
+                line_sized = true;
+            }
+
+            on_header(&names);
             continue;
         }
 

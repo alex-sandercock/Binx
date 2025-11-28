@@ -11,25 +11,39 @@ use flate2::Compression;
 use ndarray::Array1;
 use std::fs::File;
 use std::io::{BufWriter, Write};
+use std::sync::Arc;
 
 /// Aggregated result for a single locus across all samples.
 #[derive(Clone)]
 pub struct LocusOutput {
     pub id: String,
     pub best: Vec<usize>,
-    pub probs: Vec<Vec<f64>>,
+    /// Flattened probabilities in row-major order: [sample0_gt0, sample0_gt1, ..., sample1_gt0, sample1_gt1, ...]
+    /// Access pattern: probs[sample * num_genotypes + genotype]
+    pub probs: Vec<f64>,
+    pub num_genotypes: usize,
     pub bias: f64,
     pub rho: f64,
     pub mu: f64,
     pub sigma: f64,
     pub loglik: f64,
-    pub ref_counts: Array1<u32>,
-    pub total_counts: Array1<u32>,
+    pub ref_counts: Arc<Array1<u32>>,
+    pub total_counts: Arc<Array1<u32>>,
     /// VCF metadata (only present when input is VCF)
-    pub vcf_chrom: Option<String>,
+    pub vcf_chrom: Option<Arc<String>>,
     pub vcf_pos: Option<u64>,
-    pub vcf_ref: Option<String>,
-    pub vcf_alt: Option<String>,
+    pub vcf_ref: Option<Arc<String>>,
+    pub vcf_alt: Option<Arc<String>>,
+}
+
+impl LocusOutput {
+    /// Helper to get probabilities for a specific sample
+    #[inline]
+    pub fn sample_probs(&self, sample_idx: usize) -> &[f64] {
+        let start = sample_idx * self.num_genotypes;
+        let end = start + self.num_genotypes;
+        &self.probs[start..end]
+    }
 }
 
 /// Streaming writer for formats that can be written incrementally (locus by locus).
@@ -60,9 +74,9 @@ impl StreamingWriter {
         let buf_writer: BufWriter<Box<dyn Write>> = match compress {
             CompressMode::Gzip => {
                 let encoder = GzEncoder::new(writer, Compression::default());
-                BufWriter::new(Box::new(encoder))
+                BufWriter::with_capacity(64 * 1024, Box::new(encoder))
             }
-            CompressMode::None => BufWriter::new(writer),
+            CompressMode::None => BufWriter::with_capacity(64 * 1024, writer),
         };
 
         Ok(Self {
@@ -171,9 +185,9 @@ pub fn write_output(
     let mut buf_writer: BufWriter<Box<dyn Write>> = match compress {
         CompressMode::Gzip => {
             let encoder = GzEncoder::new(writer, Compression::default());
-            BufWriter::new(Box::new(encoder))
+            BufWriter::with_capacity(64 * 1024, Box::new(encoder))
         }
-        CompressMode::None => BufWriter::new(writer),
+        CompressMode::None => BufWriter::with_capacity(64 * 1024, writer),
     };
 
     // Only PLINK uses this path now

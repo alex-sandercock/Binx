@@ -6,12 +6,49 @@ use ndarray::Array1;
 use io::LocusData;
 use rayon::prelude::*;
 use std::cell::RefCell;
+use std::io::Write;
+use std::sync::Arc;
 use std::time::Instant;
 
 // Re-export FitMode for CLI usage
 pub use model::FitMode;
 
-const PAR_CHUNK: usize = 256;
+/// Calculates adaptive chunk size based on available parallelism.
+/// Conservative sizing to minimize overhead while maintaining parallelism.
+fn adaptive_chunk_size() -> usize {
+    let threads = rayon::current_num_threads();
+    if threads <= 1 {
+        512 // Single-threaded: use larger chunks
+    } else if threads <= 16 {
+        256 // Default for most common cases (2-16 threads)
+    } else if threads <= 32 {
+        192 // High parallelism: moderate reduction
+    } else {
+        128 // Very high parallelism (32+ threads): smaller chunks
+    }
+}
+
+/// Formats seconds into a human-readable time string.
+fn format_duration(seconds: f64) -> String {
+    if seconds < 60.0 {
+        format!("{:.1}s", seconds)
+    } else if seconds < 3600.0 {
+        let mins = (seconds / 60.0).floor();
+        let secs = seconds % 60.0;
+        format!("{}m {:.0}s", mins, secs)
+    } else {
+        let hours = (seconds / 3600.0).floor();
+        let mins = ((seconds % 3600.0) / 60.0).floor();
+        format!("{}h {}m", hours, mins)
+    }
+}
+
+/// Creates a simple text-based progress bar.
+fn progress_bar(percentage: f64, width: usize) -> String {
+    let filled = ((percentage / 100.0) * width as f64).round() as usize;
+    let empty = width.saturating_sub(filled);
+    format!("[{}{}]", "█".repeat(filled), "░".repeat(empty))
+}
 
 fn maybe_report_progress(
     processed: usize,
@@ -24,25 +61,42 @@ fn maybe_report_progress(
     }
     let elapsed = start.elapsed().as_secs_f64();
     let rate = processed as f64 / elapsed.max(1e-3);
+
     match total {
         Some(t) => {
             let pct = (processed as f64 / t.max(1) as f64) * 100.0;
-            eprintln!(
-                "Processed {}/{} loci ({:.1}%) in {:.1}s ({:.1} loci/s)",
+            let remaining = t.saturating_sub(processed);
+            let eta_secs = if rate > 0.0 {
+                remaining as f64 / rate
+            } else {
+                0.0
+            };
+
+            let bar = progress_bar(pct, 20);
+            eprint!(
+                "\r{} {}/{} ({:.1}%) | Elapsed: {} | Rate: {:.0}/s | ETA: {}",
+                bar,
                 processed,
                 t,
                 pct,
-                elapsed,
-                rate
+                format_duration(elapsed),
+                rate,
+                format_duration(eta_secs)
             );
+            let _ = std::io::stderr().flush();
         }
         None => {
-            eprintln!(
-                "Processed {} loci in {:.1}s ({:.1} loci/s)",
+            // Spinner for streaming mode
+            let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let spinner_idx = (elapsed as usize / 2) % spinner.len();
+            eprint!(
+                "\r{} Processing {} loci | Elapsed: {} | Rate: {:.0}/s   ",
+                spinner[spinner_idx],
                 processed,
-                elapsed,
+                format_duration(elapsed),
                 rate
             );
+            let _ = std::io::stderr().flush();
         }
     }
     *last_report = Instant::now();
@@ -274,7 +328,7 @@ fn run_dosage_streaming(
             format!("ref={} total={}", ref_path, total_path)
         }
         InputSource::Vcf { path, chunk_size } => {
-            format!("vcf={} chunk-size={}", path, chunk_size.unwrap_or(PAR_CHUNK))
+            format!("vcf={} chunk-size={}", path, chunk_size.unwrap_or_else(adaptive_chunk_size))
         }
     };
 
@@ -308,7 +362,17 @@ fn run_dosage_streaming(
         compress_desc
     );
     if verbose {
-        eprintln!("Starting dosage estimation (streaming, verbose)");
+        let threads = rayon::current_num_threads();
+        eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        eprintln!("binx-dosage: Genotype Likelihood Estimation");
+        eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        eprintln!("  Ploidy: {}", ploidy);
+        eprintln!("  Mode: {:?}", mode);
+        eprintln!("  Threads: {}", threads);
+        eprintln!("  Chunk size: {}", adaptive_chunk_size());
+        eprintln!("  Input: {}", input_desc);
+        eprintln!("  Output: {} ({})", format_desc, compress_desc);
+        eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
     }
 
     // Create streaming writer
@@ -321,7 +385,7 @@ fn run_dosage_streaming(
     let process_locus = |locus_id: String,
                           ref_counts: Array1<u32>,
                           total_counts: Array1<u32>,
-                          vcf_meta: Option<(String, u64, String, String)>| {
+                          vcf_meta: Option<(Arc<String>, u64, Arc<String>, Arc<String>)>| {
         match run_norm_model(&ref_counts, &total_counts, ploidy, mode) {
             Ok(res) => {
                 let (vcf_chrom, vcf_pos, vcf_ref, vcf_alt) = if let Some((c, p, r, a)) = vcf_meta {
@@ -330,17 +394,30 @@ fn run_dosage_streaming(
                     (None, None, None, None)
                 };
 
+                // Flatten probabilities: Vec<Vec<f64>> -> Vec<f64>
+                let num_genotypes = if res.genotype_probs.is_empty() {
+                    0
+                } else {
+                    res.genotype_probs[0].len()
+                };
+                let num_samples = res.genotype_probs.len();
+                let mut flat_probs = Vec::with_capacity(num_samples * num_genotypes);
+                for sample_probs in res.genotype_probs {
+                    flat_probs.extend(sample_probs);
+                }
+
                 Some(LocusOutput {
                     id: locus_id,
                     best: res.best_genotypes,
-                    probs: res.genotype_probs,
+                    probs: flat_probs,
+                    num_genotypes,
                     bias: res.bias,
                     rho: res.overdispersion,
                     mu: res.model_mu,
                     sigma: res.model_sigma,
                     loglik: res.final_log_lik,
-                    ref_counts: ref_counts.clone(),
-                    total_counts: total_counts.clone(),
+                    ref_counts: Arc::new(ref_counts),
+                    total_counts: Arc::new(total_counts),
                     vcf_chrom,
                     vcf_pos,
                     vcf_ref,
@@ -367,10 +444,11 @@ fn run_dosage_streaming(
 
             writer.write_header(&data.sample_names)?;
 
+            let chunk_size = adaptive_chunk_size();
             let total = data.loci.len();
             let mut iter = data.loci.into_iter();
             loop {
-                let chunk: Vec<LocusData> = iter.by_ref().take(PAR_CHUNK).collect();
+                let chunk: Vec<LocusData> = iter.by_ref().take(chunk_size).collect();
                 if chunk.is_empty() {
                     break;
                 }
@@ -405,10 +483,11 @@ fn run_dosage_streaming(
 
             writer.write_header(&matrices.sample_names)?;
 
+            let chunk_size = adaptive_chunk_size();
             let total = matrices.marker_ids.len();
             let mut start_idx = 0;
             while start_idx < total {
-                let end = (start_idx + PAR_CHUNK).min(total);
+                let end = (start_idx + chunk_size).min(total);
                 let chunk: Vec<usize> = (start_idx..end).collect();
                 let chunk_results: Vec<LocusOutput> = chunk
                     .into_par_iter()
@@ -426,7 +505,28 @@ fn run_dosage_streaming(
             }
         }
         InputSource::Vcf { path, chunk_size } => {
-            let chunk_size = chunk_size.unwrap_or(PAR_CHUNK);
+            let chunk_size = chunk_size.unwrap_or_else(adaptive_chunk_size);
+
+            // Pre-count VCF records for progress bar with ETA
+            let total_loci = if verbose {
+                eprintln!("Counting VCF records...");
+                match io::count_vcf_records(&path) {
+                    Ok(count) => {
+                        eprintln!("Found {} loci", count);
+                        Some(count)
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Could not count records ({}), progress will show without ETA", e);
+                        None
+                    }
+                }
+            } else {
+                match io::count_vcf_records(&path) {
+                    Ok(count) => Some(count),
+                    Err(_) => None,
+                }
+            };
+
             if verbose {
                 let desc = if chunk_size == 0 {
                     "one by one".to_string()
@@ -435,7 +535,7 @@ fn run_dosage_streaming(
                 };
                 eprintln!("Streaming VCF {} ({})", path, desc);
             }
-            let mut buffer: Vec<LocusData> = Vec::new();
+            let mut buffer: Vec<LocusData> = Vec::with_capacity(chunk_size);
             let sample_names_opt = RefCell::new(None::<Vec<String>>);
             let header_written = RefCell::new(false);
             let writer_cell = RefCell::new(writer);
@@ -456,7 +556,7 @@ fn run_dosage_streaming(
                     if let Some(res) = process_locus(rec.id, rec.ref_counts, rec.total_counts, vcf_meta) {
                         let _ = writer_cell.borrow_mut().write_chunk(&[res]);
                         processed += 1;
-                        maybe_report_progress(processed, None, &start, &mut last_report);
+                        maybe_report_progress(processed, total_loci, &start, &mut last_report);
                     }
                 } else {
                     buffer.push(LocusData {
@@ -484,7 +584,7 @@ fn run_dosage_streaming(
                             .collect();
                         processed += chunk_results.len();
                         let _ = writer_cell.borrow_mut().write_chunk(&chunk_results);
-                        maybe_report_progress(processed, None, &start, &mut last_report);
+                        maybe_report_progress(processed, total_loci, &start, &mut last_report);
                     }
                 }
             }).map_err(|e| anyhow::anyhow!("Failed to read VCF: {}", e))?;
@@ -516,6 +616,11 @@ fn run_dosage_streaming(
             }
 
             writer.finish()?;
+
+            let elapsed = start.elapsed().as_secs_f64();
+            let rate = processed as f64 / elapsed.max(1e-3);
+            eprintln!("\n✓ Completed {} loci in {} ({:.0} loci/s)", processed, format_duration(elapsed), rate);
+
             return Ok(());
         }
     }
@@ -523,7 +628,8 @@ fn run_dosage_streaming(
     writer.finish()?;
 
     let elapsed = start.elapsed().as_secs_f64();
-    eprintln!("Completed {} loci in {:.1}s", processed, elapsed);
+    let rate = processed as f64 / elapsed.max(1e-3);
+    eprintln!("\n✓ Completed {} loci in {} ({:.0} loci/s)", processed, format_duration(elapsed), rate);
 
     Ok(())
 }
@@ -553,7 +659,7 @@ fn run_dosage_collected(
             format!("ref={} total={}", ref_path, total_path)
         }
         InputSource::Vcf { path, chunk_size } => {
-            format!("vcf={} chunk-size={}", path, chunk_size.unwrap_or(PAR_CHUNK))
+            format!("vcf={} chunk-size={}", path, chunk_size.unwrap_or_else(adaptive_chunk_size))
         }
     };
 
@@ -587,7 +693,18 @@ fn run_dosage_collected(
         compress_desc
     );
     if verbose {
-        eprintln!("Starting dosage estimation (verbose)");
+        let threads = rayon::current_num_threads();
+        eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        eprintln!("binx-dosage: Genotype Likelihood Estimation");
+        eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        eprintln!("  Ploidy: {}", ploidy);
+        eprintln!("  Mode: {:?}", mode);
+        eprintln!("  Threads: {}", threads);
+        eprintln!("  Chunk size: {}", adaptive_chunk_size());
+        eprintln!("  Input: {}", input_desc);
+        eprintln!("  Output: {} ({})", format_desc, compress_desc);
+        eprintln!("  ⚠ Collection mode (PLINK format)");
+        eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
     }
 
     let start = Instant::now();
@@ -597,7 +714,7 @@ fn run_dosage_collected(
     let process_locus = |locus_id: String,
                           ref_counts: Array1<u32>,
                           total_counts: Array1<u32>,
-                          vcf_meta: Option<(String, u64, String, String)>| {
+                          vcf_meta: Option<(Arc<String>, u64, Arc<String>, Arc<String>)>| {
         match run_norm_model(&ref_counts, &total_counts, ploidy, mode) {
             Ok(res) => {
                 let (vcf_chrom, vcf_pos, vcf_ref, vcf_alt) = if let Some((c, p, r, a)) = vcf_meta {
@@ -606,17 +723,30 @@ fn run_dosage_collected(
                     (None, None, None, None)
                 };
 
+                // Flatten probabilities: Vec<Vec<f64>> -> Vec<f64>
+                let num_genotypes = if res.genotype_probs.is_empty() {
+                    0
+                } else {
+                    res.genotype_probs[0].len()
+                };
+                let num_samples = res.genotype_probs.len();
+                let mut flat_probs = Vec::with_capacity(num_samples * num_genotypes);
+                for sample_probs in res.genotype_probs {
+                    flat_probs.extend(sample_probs);
+                }
+
                 Some(LocusOutput {
                     id: locus_id,
                     best: res.best_genotypes,
-                    probs: res.genotype_probs,
+                    probs: flat_probs,
+                    num_genotypes,
                     bias: res.bias,
                     rho: res.overdispersion,
                     mu: res.model_mu,
                     sigma: res.model_sigma,
                     loglik: res.final_log_lik,
-                    ref_counts: ref_counts.clone(),
-                    total_counts: total_counts.clone(),
+                    ref_counts: Arc::new(ref_counts),
+                    total_counts: Arc::new(total_counts),
                     vcf_chrom,
                     vcf_pos,
                     vcf_ref,
@@ -641,11 +771,12 @@ fn run_dosage_collected(
                 eprintln!("Found {} loci from CSV", data.loci.len());
             }
             let sample_names = data.sample_names.clone();
+            let chunk_size = adaptive_chunk_size();
             let total = data.loci.len();
             let mut iter = data.loci.into_iter();
-            let mut all_results = Vec::new();
+            let mut all_results = Vec::with_capacity(total);
             loop {
-                let chunk: Vec<LocusData> = iter.by_ref().take(PAR_CHUNK).collect();
+                let chunk: Vec<LocusData> = iter.by_ref().take(chunk_size).collect();
                 if chunk.is_empty() {
                     break;
                 }
@@ -678,11 +809,12 @@ fn run_dosage_collected(
                 eprintln!("Found {} loci from matrices", matrices.marker_ids.len());
             }
             let sample_names = matrices.sample_names.clone();
+            let chunk_size = adaptive_chunk_size();
             let total = matrices.marker_ids.len();
             let mut start_idx = 0;
-            let mut all_results = Vec::new();
+            let mut all_results = Vec::with_capacity(total);
             while start_idx < total {
-                let end = (start_idx + PAR_CHUNK).min(total);
+                let end = (start_idx + chunk_size).min(total);
                 let chunk: Vec<usize> = (start_idx..end).collect();
                 let chunk_results: Vec<LocusOutput> = chunk
                     .into_par_iter()
@@ -700,7 +832,28 @@ fn run_dosage_collected(
             (all_results, sample_names)
         }
         InputSource::Vcf { path, chunk_size } => {
-            let chunk_size = chunk_size.unwrap_or(PAR_CHUNK);
+            let chunk_size = chunk_size.unwrap_or_else(adaptive_chunk_size);
+
+            // Pre-count VCF records for progress bar with ETA
+            let total_loci = if verbose {
+                eprintln!("Counting VCF records...");
+                match io::count_vcf_records(&path) {
+                    Ok(count) => {
+                        eprintln!("Found {} loci", count);
+                        Some(count)
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Could not count records ({}), progress will show without ETA", e);
+                        None
+                    }
+                }
+            } else {
+                match io::count_vcf_records(&path) {
+                    Ok(count) => Some(count),
+                    Err(_) => None,
+                }
+            };
+
             if verbose {
                 let desc = if chunk_size == 0 {
                     "one by one".to_string()
@@ -709,9 +862,9 @@ fn run_dosage_collected(
                 };
                 eprintln!("Streaming VCF {} ({})", path, desc);
             }
-            let mut buffer: Vec<LocusData> = Vec::new();
+            let mut buffer: Vec<LocusData> = Vec::with_capacity(chunk_size);
             let mut sample_names: Option<Vec<String>> = None;
-            let mut all_results = Vec::new();
+            let mut all_results = Vec::with_capacity(1024); // Estimate: start with capacity for 1K loci
 
             io::stream_vcf_records(&path, |names| {
                 sample_names = Some(names.to_vec());
@@ -721,7 +874,7 @@ fn run_dosage_collected(
                     if let Some(res) = process_locus(rec.id, rec.ref_counts, rec.total_counts, vcf_meta) {
                         all_results.push(res);
                         processed += 1;
-                        maybe_report_progress(processed, None, &start, &mut last_report);
+                        maybe_report_progress(processed, total_loci, &start, &mut last_report);
                     }
                 } else {
                     buffer.push(LocusData {
@@ -749,7 +902,7 @@ fn run_dosage_collected(
                             .collect();
                         processed += chunk_results.len();
                         all_results.extend(chunk_results);
-                        maybe_report_progress(processed, None, &start, &mut last_report);
+                        maybe_report_progress(processed, total_loci, &start, &mut last_report);
                     }
                 }
             }).map_err(|e| anyhow::anyhow!("Failed to read VCF: {}", e))?;
@@ -788,7 +941,8 @@ fn run_dosage_collected(
     io::output::write_output(results, &sample_names, format, compress, output, ploidy)?;
 
     let elapsed = start.elapsed().as_secs_f64();
-    eprintln!("Completed {} loci in {:.1}s", processed, elapsed);
+    let rate = processed as f64 / elapsed.max(1e-3);
+    eprintln!("\n✓ Completed {} loci in {} ({:.0} loci/s)", processed, format_duration(elapsed), rate);
 
     Ok(())
 }

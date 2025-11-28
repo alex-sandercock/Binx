@@ -24,7 +24,9 @@ pub fn write_header(
 pub fn write_chunk(writer: &mut dyn Write, chunk: &[LocusOutput]) -> anyhow::Result<()> {
     for res in chunk {
         write!(writer, "{}\tA\tT", res.id)?;
-        for sample_probs in &res.probs {
+        // Iterate over flattened probs: each sample has num_genotypes consecutive values
+        for sample_idx in 0..res.best.len() {
+            let sample_probs = res.sample_probs(sample_idx);
             for prob in sample_probs {
                 write!(writer, " {:.6}", prob)?;
             }

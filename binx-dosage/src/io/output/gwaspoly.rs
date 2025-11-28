@@ -22,7 +22,7 @@ pub fn write_chunk(
 ) -> anyhow::Result<()> {
     for res in chunk {
         // Use VCF metadata if available, otherwise use placeholder values
-        let chrom = res.vcf_chrom.as_deref().unwrap_or("chr1");
+        let chrom = res.vcf_chrom.as_ref().map(|s| s.as_str()).unwrap_or("chr1");
         let pos = res.vcf_pos.unwrap_or(0);
 
         // Write marker ID, chromosome, position

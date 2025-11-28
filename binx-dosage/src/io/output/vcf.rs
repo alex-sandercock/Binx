@@ -30,10 +30,10 @@ pub fn write_chunk(
         let num_samples = res.best.len();
 
         // Use real VCF metadata if available, otherwise use dummy values
-        let chrom = res.vcf_chrom.as_deref().unwrap_or("chr1");
+        let chrom = res.vcf_chrom.as_ref().map(|s| s.as_str()).unwrap_or("chr1");
         let pos = res.vcf_pos.unwrap_or(1);
-        let ref_allele = res.vcf_ref.as_deref().unwrap_or("A");
-        let alt_allele = res.vcf_alt.as_deref().unwrap_or("T");
+        let ref_allele = res.vcf_ref.as_ref().map(|s| s.as_str()).unwrap_or("A");
+        let alt_allele = res.vcf_alt.as_ref().map(|s| s.as_str()).unwrap_or("T");
 
         // CHROM POS ID REF ALT QUAL FILTER INFO FORMAT
         write!(
@@ -48,7 +48,8 @@ pub fn write_chunk(
             let gt_str = genotype_to_vcf(best_gt, ploidy);
 
             // PL field - convert probabilities to Phred-scaled likelihoods
-            let pl_values: Vec<String> = res.probs[sample_idx]
+            let sample_probs = res.sample_probs(sample_idx);
+            let pl_values: Vec<String> = sample_probs
                 .iter()
                 .map(|&prob| {
                     let phred = if prob > 0.0 {

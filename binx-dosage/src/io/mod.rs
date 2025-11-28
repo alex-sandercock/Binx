@@ -1,4 +1,5 @@
 use ndarray::{Array1, Array2};
+use std::sync::Arc;
 
 pub mod matrix;
 pub mod vcf;
@@ -20,10 +21,10 @@ pub struct LocusData {
     pub ref_counts: Array1<u32>,
     pub total_counts: Array1<u32>,
     /// VCF metadata (only present when source is VCF)
-    pub vcf_chrom: Option<String>,
+    pub vcf_chrom: Option<Arc<String>>,
     pub vcf_pos: Option<u64>,
-    pub vcf_ref: Option<String>,
-    pub vcf_alt: Option<String>,
+    pub vcf_ref: Option<Arc<String>>,
+    pub vcf_alt: Option<Arc<String>>,
 }
 
 /// Matrix inputs (markers x samples).
@@ -40,14 +41,14 @@ pub struct VcfRecordCounts {
     pub ref_counts: Array1<u32>,
     pub total_counts: Array1<u32>,
     /// VCF metadata
-    pub chrom: String,
+    pub chrom: Arc<String>,
     pub pos: u64,
-    pub ref_allele: String,
-    pub alt_allele: String,
+    pub ref_allele: Arc<String>,
+    pub alt_allele: Arc<String>,
 }
 
 pub use matrix::{parse_ref_total_matrices, parse_two_line_csv};
-pub use vcf::stream_vcf_records;
+pub use vcf::{count_vcf_records, stream_vcf_records};
 
 #[cfg(feature = "bcf")]
 pub use bcf::stream_bcf_records;

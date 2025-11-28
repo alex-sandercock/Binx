@@ -8,7 +8,7 @@ use super::{LocusData, MatrixData, TwoLineData};
 
 pub fn parse_two_line_csv(path: &str) -> Result<TwoLineData, Box<dyn Error>> {
     let file = File::open(path)?;
-    let reader = BufReader::new(file);
+    let reader = BufReader::with_capacity(64 * 1024, file);
     let mut lines = reader.lines();
 
     // First non-empty line must be header with sample names
@@ -33,7 +33,7 @@ pub fn parse_two_line_csv(path: &str) -> Result<TwoLineData, Box<dyn Error>> {
     }
     let sample_names = header_parts[1..].to_vec();
 
-    let mut loci = Vec::new();
+    let mut loci = Vec::with_capacity(1024); // Estimate: start with capacity for 1K loci
     while let Some(line1_res) = lines.next() {
         let line1 = line1_res?;
         if line1.trim().is_empty() {
@@ -93,7 +93,7 @@ fn detect_delimiter(header_line: &str) -> char {
 /// Returns marker IDs, rows of counts, and sample names.
 fn parse_matrix_file(path: &str) -> Result<(Vec<String>, Vec<Vec<u32>>, Vec<String>), Box<dyn Error>> {
     let file = File::open(path)?;
-    let mut reader = BufReader::new(file);
+    let mut reader = BufReader::with_capacity(64 * 1024, file);
     let mut header = String::new();
     let bytes = reader.read_line(&mut header)?;
     if bytes == 0 {
@@ -113,8 +113,8 @@ fn parse_matrix_file(path: &str) -> Result<(Vec<String>, Vec<Vec<u32>>, Vec<Stri
 
     let expected_cols = header_fields.len();
     let sample_names = header_fields[1..].to_vec();
-    let mut marker_ids = Vec::new();
-    let mut rows: Vec<Vec<u32>> = Vec::new();
+    let mut marker_ids = Vec::with_capacity(1024); // Estimate: start with capacity for 1K markers
+    let mut rows: Vec<Vec<u32>> = Vec::with_capacity(1024);
 
     for (idx, line_res) in reader.lines().enumerate() {
         let line = line_res?;
