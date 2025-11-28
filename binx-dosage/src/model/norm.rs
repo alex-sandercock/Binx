@@ -1,9 +1,11 @@
 use crate::math::{prob_ref_read, log_sum_exp, discretized_normal_probs, log_beta_binomial_pdf};
 use crate::GenotypeResult;
 use ndarray::Array1;
+use statrs::function::gamma::digamma;
 
 const MAX_ITER: usize = 200;
 const TOLERANCE: f64 = 1e-6;
+const TOLERANCE_UPDOG: f64 = 1e-4;
 const SPRINT_ITERS: usize = 8; // Short run for multi-start comparison
 const PRIOR_MEAN_LOG_BIAS: f64 = 0.0;
 const PRIOR_VAR_LOG_BIAS: f64 = 0.7 * 0.7; // Updog default 0.7^2
@@ -15,6 +17,46 @@ const MIN_SIGMA: f64 = 1e-3;
 const NEG_INF_FALLBACK: f64 = -1.0e30;
 const LN_2PI: f64 = 1.8378770664093453; // ln(2*pi)
 
+#[derive(Clone, Copy)]
+pub(crate) struct Bounds {
+    bias_min: f64,
+    bias_max: f64,
+    rho_min: f64,
+    rho_max: f64,
+    seq_min: f64,
+    seq_max: f64,
+    sigma_min: f64,
+    sigma_max: f64,
+}
+
+impl Bounds {
+    fn default() -> Self {
+        Bounds {
+            bias_min: 1e-3,
+            bias_max: 10.0,
+            rho_min: 1e-6,
+            rho_max: 0.999,
+            seq_min: 1e-5,
+            seq_max: 0.05,
+            sigma_min: MIN_SIGMA,
+            sigma_max: 2.0, // will be overridden per ploidy in optimize_mu_sigma
+        }
+    }
+
+    fn relaxed() -> Self {
+        Bounds {
+            bias_min: 1e-6,
+            bias_max: 1e6, // effectively unbounded for parity testing
+            rho_min: 1e-6,
+            rho_max: 0.999999,
+            seq_min: 1e-6,
+            seq_max: 0.05,
+            sigma_min: 1e-8,
+            sigma_max: 1000.0,
+        }
+    }
+}
+
 /// Mode for multi-start strategy
 #[derive(Debug, Clone, Copy)]
 pub enum FitMode {
@@ -22,17 +64,22 @@ pub enum FitMode {
     Auto,
     /// Full Updog validation: 5 starts [0.37, 0.61, 1.0, 1.65, 2.72]
     Updog,
+    /// Updog validation with relaxed bounds matching R implementation
+    UpdogExact,
     /// Fast mode: single start at bias=1.0
     Fast,
 }
 
 /// Encapsulates the state of the EM algorithm for norm model fitting.
 /// Allows pausing/resuming EM iterations for multi-start strategies.
-pub struct EMState<'a> {
+pub(crate) struct EMState<'a> {
     // Zero-copy references to data
     ref_counts: &'a Array1<u32>,
     total_counts: &'a Array1<u32>,
     ploidy: usize,
+    bounds: Bounds,
+    use_joint_eps_update: bool,
+    tolerance: f64,
 
     // Model parameters
     pub bias: f64,
@@ -46,16 +93,20 @@ pub struct EMState<'a> {
 
     // Current state
     pub current_log_lik: f64,
+    pub current_log_lik_penalized: f64,
     pub iter_count: usize,
 }
 
 impl<'a> EMState<'a> {
     /// Create a new EM state with data-driven mu/sigma initialization and explicit bias
-    pub fn new_with_bias(
+    pub(crate) fn new_with_bias(
         ref_counts: &'a Array1<u32>,
         total_counts: &'a Array1<u32>,
         ploidy: usize,
         bias: f64,
+        bounds: Bounds,
+        use_joint_eps_update: bool,
+        tolerance: f64,
     ) -> Self {
         let n_samples = ref_counts.len();
 
@@ -78,6 +129,9 @@ impl<'a> EMState<'a> {
             ref_counts,
             total_counts,
             ploidy,
+            bounds,
+            use_joint_eps_update,
+            tolerance,
             bias,
             rho: 0.01,
             seq_error: 0.005,
@@ -85,6 +139,7 @@ impl<'a> EMState<'a> {
             sigma,
             posteriors,
             current_log_lik: f64::NEG_INFINITY,
+            current_log_lik_penalized: f64::NEG_INFINITY,
             iter_count: 0,
         }
     }
@@ -130,70 +185,94 @@ impl<'a> EMState<'a> {
                 weights[k] += self.posteriors[i][k];
             }
         }
-        let (new_mu, new_sigma) = optimize_mu_sigma(self.mu, self.sigma, &weights, self.ploidy);
+        let (new_mu, new_sigma) = optimize_mu_sigma(
+            self.mu,
+            self.sigma,
+            &weights,
+            self.ploidy,
+            self.bounds,
+        );
         self.mu = new_mu;
         self.sigma = new_sigma;
 
-        // 3b. Update Bias and Rho (Coordinate Descent)
-        for _sub_iter in 0..3 {
-            self.bias = optimize_param_gss(
+        // 3b. Update Bias, Rho, Seq
+        if self.use_joint_eps_update {
+            let (b, r, s) = optimize_eps_joint(
                 self.bias,
-                1e-3,
-                10.0,
-                |b| {
-                    q_func(
-                        b,
-                        self.rho,
-                        self.seq_error,
-                        self.ref_counts,
-                        self.total_counts,
-                        &self.posteriors,
-                        self.ploidy,
-                    )
-                },
-            );
-
-            self.rho = optimize_param_gss(
                 self.rho,
-                1e-6,
-                0.999,
-                |r| {
-                    q_func(
-                        self.bias,
-                        r,
-                        self.seq_error,
-                        self.ref_counts,
-                        self.total_counts,
-                        &self.posteriors,
-                        self.ploidy,
-                    )
-                },
-            );
-
-            self.seq_error = optimize_param_gss(
                 self.seq_error,
-                1e-5,
-                0.05,
-                |s| {
-                    q_func(
-                        self.bias,
-                        self.rho,
-                        s,
-                        self.ref_counts,
-                        self.total_counts,
-                        &self.posteriors,
-                        self.ploidy,
-                    )
-                },
+                self.ref_counts,
+                self.total_counts,
+                &self.posteriors,
+                self.ploidy,
+                self.bounds,
             );
+            self.bias = b;
+            self.rho = r;
+            self.seq_error = s;
+        } else {
+            for _sub_iter in 0..3 {
+                self.bias = optimize_param_gss(
+                    self.bias,
+                    self.bounds.bias_min,
+                    self.bounds.bias_max,
+                    |b| {
+                        q_func(
+                            b,
+                            self.rho,
+                            self.seq_error,
+                            self.ref_counts,
+                            self.total_counts,
+                            &self.posteriors,
+                            self.ploidy,
+                        )
+                    },
+                );
+
+                self.rho = optimize_param_gss(
+                    self.rho,
+                    self.bounds.rho_min,
+                    self.bounds.rho_max,
+                    |r| {
+                        q_func(
+                            self.bias,
+                            r,
+                            self.seq_error,
+                            self.ref_counts,
+                            self.total_counts,
+                            &self.posteriors,
+                            self.ploidy,
+                        )
+                    },
+                );
+
+                self.seq_error = optimize_param_gss(
+                    self.seq_error,
+                    self.bounds.seq_min,
+                    self.bounds.seq_max,
+                    |s| {
+                        q_func(
+                            self.bias,
+                            self.rho,
+                            s,
+                            self.ref_counts,
+                            self.total_counts,
+                            &self.posteriors,
+                            self.ploidy,
+                        )
+                    },
+                );
+            }
         }
 
+        let penalty = prior_penalty(self.bias, self.seq_error, self.rho);
         self.iter_count += 1;
+        self.current_log_lik_penalized = new_log_lik + penalty;
     }
 
     /// Check if EM has converged
     pub fn has_converged(&self, prev_log_lik: f64) -> bool {
-        (self.current_log_lik - prev_log_lik).abs() < TOLERANCE
+        (self.current_log_lik_penalized - prev_log_lik).abs() < self.tolerance
     }
 
     /// Convert to final GenotypeResult
@@ -243,18 +322,70 @@ pub fn fit_norm_with_mode(
     ploidy: usize,
     mode: FitMode,
 ) -> anyhow::Result<GenotypeResult> {
+    let relaxed_bounds = matches!(mode, FitMode::UpdogExact);
+    fit_norm_with_mode_and_bounds(ref_counts, total_counts, ploidy, mode, relaxed_bounds)
+}
+
+/// Fit norm model with configurable multi-start strategy and bounds choice
+pub(crate) fn fit_norm_with_mode_and_bounds(
+    ref_counts: &Array1<u32>,
+    total_counts: &Array1<u32>,
+    ploidy: usize,
+    mode: FitMode,
+    relaxed_bounds: bool,
+) -> anyhow::Result<GenotypeResult> {
+    let bounds = if relaxed_bounds { Bounds::relaxed() } else { Bounds::default() };
+    let use_joint_eps = matches!(mode, FitMode::UpdogExact);
+    let tolerance = if use_joint_eps { TOLERANCE_UPDOG } else { TOLERANCE };
+
     match mode {
         FitMode::Auto => {
             // Hybrid sprint: 3 starts, 8 iters each, pick winner, run to convergence
-            fit_norm_hybrid_sprint(ref_counts, total_counts, ploidy, vec![0.5, 1.0, 2.0])
+            fit_norm_hybrid_sprint(
+                ref_counts,
+                total_counts,
+                ploidy,
+                vec![0.5, 1.0, 2.0],
+                bounds,
+                use_joint_eps,
+                tolerance,
+            )
         }
         FitMode::Updog => {
             // Full multi-start: ALL 5 starts to convergence, pick best (matches R package)
-            fit_norm_full_multistart(ref_counts, total_counts, ploidy, vec![0.368, 0.607, 1.0, 1.649, 2.718])
+            fit_norm_full_multistart(
+                ref_counts,
+                total_counts,
+                ploidy,
+                vec![0.368, 0.607, 1.0, 1.649, 2.718],
+                bounds,
+                use_joint_eps,
+                tolerance,
+            )
         }
         FitMode::Fast => {
             // Single start, no sprint
-            fit_norm_single_start(ref_counts, total_counts, ploidy, 1.0)
+            fit_norm_single_start(
+                ref_counts,
+                total_counts,
+                ploidy,
+                1.0,
+                bounds,
+                use_joint_eps,
+                tolerance,
+            )
+        }
+        FitMode::UpdogExact => {
+            // Match Updog: full multi-start with relaxed bounds
+            fit_norm_full_multistart(
+                ref_counts,
+                total_counts,
+                ploidy,
+                vec![0.368, 0.607, 1.0, 1.649, 2.718],
+                bounds,
+                use_joint_eps,
+                tolerance,
+            )
         }
     }
 }
@@ -265,11 +396,22 @@ fn fit_norm_single_start(
     total_counts: &Array1<u32>,
     ploidy: usize,
     bias: f64,
+    bounds: Bounds,
+    use_joint_eps_update: bool,
+    tolerance: f64,
 ) -> anyhow::Result<GenotypeResult> {
-    let mut state = EMState::new_with_bias(ref_counts, total_counts, ploidy, bias);
+    let mut state = EMState::new_with_bias(
+        ref_counts,
+        total_counts,
+        ploidy,
+        bias,
+        bounds,
+        use_joint_eps_update,
+        tolerance,
+    );
 
     for _ in 0..MAX_ITER {
-        let prev_log_lik = state.current_log_lik;
+        let prev_log_lik = state.current_log_lik_penalized;
         state.em_step();
 
         if state.has_converged(prev_log_lik) {
@@ -286,20 +428,31 @@ fn fit_norm_hybrid_sprint(
     total_counts: &Array1<u32>,
     ploidy: usize,
     bias_starts: Vec<f64>,
+    bounds: Bounds,
+    use_joint_eps_update: bool,
+    tolerance: f64,
 ) -> anyhow::Result<GenotypeResult> {
     let mut best_state: Option<EMState> = None;
     let mut max_log_lik = f64::NEG_INFINITY;
 
     // Sprint phase: run limited iterations on all starts
     for bias in &bias_starts {
-        let mut state = EMState::new_with_bias(ref_counts, total_counts, ploidy, *bias);
+        let mut state = EMState::new_with_bias(
+            ref_counts,
+            total_counts,
+            ploidy,
+            *bias,
+            bounds,
+            use_joint_eps_update,
+            tolerance,
+        );
 
         for _ in 0..SPRINT_ITERS {
             state.em_step();
         }
 
-        if state.current_log_lik > max_log_lik {
-            max_log_lik = state.current_log_lik;
+        if state.current_log_lik_penalized > max_log_lik {
+            max_log_lik = state.current_log_lik_penalized;
             best_state = Some(state);
         }
     }
@@ -308,7 +461,7 @@ fn fit_norm_hybrid_sprint(
 
     // Marathon: run winner to convergence
     for _ in 0..MAX_ITER {
-        let prev_log_lik = winner.current_log_lik;
+        let prev_log_lik = winner.current_log_lik_penalized;
         winner.em_step();
 
         if winner.has_converged(prev_log_lik) {
@@ -323,20 +476,31 @@ fn fit_norm_hybrid_sprint(
 /// This matches the R package exactly: each bias init runs to convergence independently
 fn fit_norm_full_multistart(
     ref_counts: &Array1<u32>,
-    total_counts: &Array1<u32>,
-    ploidy: usize,
-    bias_starts: Vec<f64>,
+        total_counts: &Array1<u32>,
+        ploidy: usize,
+        bias_starts: Vec<f64>,
+        bounds: Bounds,
+        use_joint_eps_update: bool,
+        tolerance: f64,
 ) -> anyhow::Result<GenotypeResult> {
     let mut best_result: Option<GenotypeResult> = None;
     let mut max_log_lik = f64::NEG_INFINITY;
 
     // Run each start to full convergence (expensive but thorough)
     for bias in &bias_starts {
-        let mut state = EMState::new_with_bias(ref_counts, total_counts, ploidy, *bias);
+        let mut state = EMState::new_with_bias(
+            ref_counts,
+            total_counts,
+            ploidy,
+            *bias,
+            bounds,
+            use_joint_eps_update,
+            tolerance,
+        );
 
         // Run to convergence
         for _ in 0..MAX_ITER {
-            let prev_log_lik = state.current_log_lik;
+            let prev_log_lik = state.current_log_lik_penalized;
             state.em_step();
 
             if state.has_converged(prev_log_lik) {
@@ -345,8 +509,8 @@ fn fit_norm_full_multistart(
         }
 
         // Keep best converged result
-        if state.current_log_lik > max_log_lik {
-            max_log_lik = state.current_log_lik;
+        if state.current_log_lik_penalized > max_log_lik {
+            max_log_lik = state.current_log_lik_penalized;
             best_result = Some(state.into_result("unknown".to_string()));
         }
     }
@@ -426,9 +590,11 @@ fn optimize_mu_sigma(
     current_sigma: f64,
     weights: &[f64],
     ploidy: usize,
+    bounds: Bounds,
 ) -> (f64, f64) {
     let mut mu = current_mu;
-    let mut sigma = current_sigma.max(MIN_SIGMA);
+    let sigma_upper = bounds.sigma_max.max((ploidy as f64) + 2.0);
+    let mut sigma = current_sigma.max(bounds.sigma_min);
     for _ in 0..5 {
         mu = optimize_param_gss(
             mu,
@@ -438,8 +604,8 @@ fn optimize_mu_sigma(
         );
         sigma = optimize_param_gss(
             sigma,
-            MIN_SIGMA,
-            (ploidy as f64) + 2.0,
+            bounds.sigma_min,
+            sigma_upper,
             |s| lnorm_obj(mu, s, weights, ploidy),
         );
     }
@@ -502,4 +668,265 @@ fn is_valid_prob(x: f64) -> bool {
 
 fn logit(x: f64) -> f64 {
     (x / (1.0 - x)).ln()
+}
+
+fn dpen_dh(h: f64, mu_h: f64, var_h: f64) -> f64 {
+    if !var_h.is_finite() {
+        return 0.0;
+    }
+    -((h.ln() - mu_h) / var_h) / h
+}
+
+fn dpen_deps(eps: f64, mu_eps: f64, var_eps: f64) -> f64 {
+    if !var_eps.is_finite() {
+        return 0.0;
+    }
+    let denom = eps * (1.0 - eps);
+    if denom <= 0.0 {
+        return 0.0;
+    }
+    -(1.0 - 2.0 * eps + (logit(eps) - mu_eps) / var_eps) / denom
+}
+
+fn dlbeta_dxi(x: u32, n: u32, xi: f64, tau: f64) -> f64 {
+    let c = (1.0 - tau) / tau;
+    c * digamma(x as f64 + xi * c)
+        - c * digamma((n - x) as f64 + (1.0 - xi) * c)
+        - c * digamma(xi * c)
+        + c * digamma((1.0 - xi) * c)
+}
+
+fn dlbeta_dc(x: u32, n: u32, xi: f64, c: f64) -> f64 {
+    -xi * digamma(xi * c)
+        - (1.0 - xi) * digamma((1.0 - xi) * c)
+        + digamma(c)
+        + xi * digamma(x as f64 + xi * c)
+        + (1.0 - xi) * digamma((n - x) as f64 + (1.0 - xi) * c)
+        - digamma(n as f64 + c)
+}
+
+fn dc_dtau(tau: f64) -> f64 {
+    -1.0 / (tau * tau)
+}
+
+fn dxi_dh(p: f64, eps: f64, h: f64) -> f64 {
+    let f = eps * (1.0 - p) + (1.0 - eps) * p;
+    -f * (1.0 - f) / (h * (1.0 - f) + f).powi(2)
+}
+
+fn dxi_df(h: f64, f: f64) -> f64 {
+    h / (h * (1.0 - f) + f).powi(2)
+}
+
+fn df_deps(p: f64) -> f64 {
+    1.0 - 2.0 * p
+}
+
+fn dlbeta_dtau(x: u32, n: u32, p: f64, eps: f64, h: f64, tau: f64) -> f64 {
+    let eta = p * (1.0 - eps) + (1.0 - p) * eps;
+    let xi = eta / (h * (1.0 - eta) + eta);
+    let dlbetadc = dlbeta_dc(x, n, xi, (1.0 - tau) / tau);
+    let dcdtau = dc_dtau(tau);
+    dlbetadc * dcdtau
+}
+
+fn dlbeta_dh(x: u32, n: u32, p: f64, eps: f64, h: f64, tau: f64) -> f64 {
+    let eta = p * (1.0 - eps) + (1.0 - p) * eps;
+    let xi = eta / (h * (1.0 - eta) + eta);
+    let dlbetadxi = dlbeta_dxi(x, n, xi, tau);
+    let dxidh = dxi_dh(p, eps, h);
+    dlbetadxi * dxidh
+}
+
+fn dlbeta_deps(x: u32, n: u32, p: f64, eps: f64, h: f64, tau: f64) -> f64 {
+    let f = eps * (1.0 - p) + (1.0 - eps) * p;
+    let xi = f / (h * (1.0 - f) + f);
+    let dlbetadxi = dlbeta_dxi(x, n, xi, tau);
+    let dxidf = dxi_df(h, f);
+    let dfdeps = df_deps(p);
+    dlbetadxi * dxidf * dfdeps
+}
+
+fn eps_obj(
+    eps: f64,
+    bias: f64,
+    tau: f64,
+    ref_counts: &Array1<u32>,
+    total_counts: &Array1<u32>,
+    posteriors: &[Vec<f64>],
+    ploidy: usize,
+) -> f64 {
+    if !is_valid_prob(eps) || !is_valid_prob(tau) || bias <= 0.0 {
+        return NEG_INF_FALLBACK;
+    }
+
+    let mut obj = 0.0;
+    for i in 0..ref_counts.len() {
+        let r = ref_counts[i];
+        let n = total_counts[i];
+        for k in 0..=ploidy {
+            let w = posteriors[i][k];
+            if w < 1e-12 {
+                continue;
+            }
+            let xi = prob_ref_read(k, ploidy, eps, bias);
+            let log_lik = log_beta_binomial_pdf(r, n, xi, tau);
+            obj += w * log_lik;
+        }
+    }
+    obj + prior_penalty(bias, eps, tau)
+}
+
+fn eps_grad(
+    eps: f64,
+    bias: f64,
+    tau: f64,
+    ref_counts: &Array1<u32>,
+    total_counts: &Array1<u32>,
+    posteriors: &[Vec<f64>],
+    ploidy: usize,
+) -> (f64, f64, f64) {
+    let mut geps = 0.0;
+    let mut gh = 0.0;
+    let mut gtau = 0.0;
+
+    for i in 0..ref_counts.len() {
+        let r = ref_counts[i];
+        let n = total_counts[i];
+        for k in 0..=ploidy {
+            let w = posteriors[i][k];
+            if w < 1e-12 {
+                continue;
+            }
+            let p = k as f64 / ploidy as f64;
+            geps += w * dlbeta_deps(r, n, p, eps, bias, tau);
+            gh += w * dlbeta_dh(r, n, p, eps, bias, tau);
+            gtau += w * dlbeta_dtau(r, n, p, eps, bias, tau);
+        }
+    }
+
+    geps += dpen_deps(eps, PRIOR_MEAN_LOGIT_SEQ, PRIOR_VAR_LOGIT_SEQ);
+    gh += dpen_dh(bias, PRIOR_MEAN_LOG_BIAS, PRIOR_VAR_LOG_BIAS);
+    gtau += dpen_deps(tau, PRIOR_MEAN_LOGIT_RHO, PRIOR_VAR_LOGIT_RHO);
+
+    (geps, gh, gtau)
+}
+
+fn optimize_eps_joint(
+    init_bias: f64,
+    init_rho: f64,
+    init_seq: f64,
+    ref_counts: &Array1<u32>,
+    total_counts: &Array1<u32>,
+    posteriors: &[Vec<f64>],
+    ploidy: usize,
+    bounds: Bounds,
+) -> (f64, f64, f64) {
+    let init = Array1::from(vec![
+        init_seq.clamp(bounds.seq_min, bounds.seq_max),
+        init_bias.clamp(bounds.bias_min, bounds.bias_max),
+        init_rho.clamp(bounds.rho_min, bounds.rho_max),
+    ]);
+
+    let objective = EpsObjective {
+        ref_counts,
+        total_counts,
+        posteriors,
+        ploidy,
+        bounds,
+    };
+
+    // Simple projected gradient ascent fallback
+    let mut eps = init[0];
+    let mut bias = init[1];
+    let mut rho = init[2];
+
+    let mut current = eps_obj(eps, bias, rho, ref_counts, total_counts, posteriors, ploidy);
+    for iter in 0..75 {
+        let (geps, gh, gtau) = eps_grad(eps, bias, rho, ref_counts, total_counts, posteriors, ploidy);
+        let gnorm = (geps * geps + gh * gh + gtau * gtau).sqrt();
+        if gnorm < 1e-5 {
+            break;
+        }
+        let mut step = 0.1 / (1.0 + iter as f64 * 0.05);
+        let mut improved = false;
+        for _ in 0..10 {
+            let new_eps = (eps + step * geps).clamp(bounds.seq_min, bounds.seq_max);
+            let new_bias = (bias + step * gh).clamp(bounds.bias_min, bounds.bias_max);
+            let new_rho = (rho + step * gtau).clamp(bounds.rho_min, bounds.rho_max);
+            let new_obj = eps_obj(new_eps, new_bias, new_rho, ref_counts, total_counts, posteriors, ploidy);
+            if new_obj > current {
+                eps = new_eps;
+                bias = new_bias;
+                rho = new_rho;
+                current = new_obj;
+                improved = true;
+                break;
+            }
+            step *= 0.5;
+        }
+        if !improved {
+            break;
+        }
+    }
+
+    (bias, rho, eps)
+}
+
+struct EpsObjective<'a> {
+    ref_counts: &'a Array1<u32>,
+    total_counts: &'a Array1<u32>,
+    posteriors: &'a [Vec<f64>],
+    ploidy: usize,
+    bounds: Bounds,
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    #[test]
+    fn eps_grad_matches_finite_diff() {
+        let ref_counts = Array1::from(vec![5_u32, 10, 0, 2]);
+        let total_counts = Array1::from(vec![10_u32, 10, 10, 10]);
+        let ploidy = 4;
+        let posteriors = vec![
+            vec![0.1, 0.2, 0.4, 0.2, 0.1],
+            vec![0.25, 0.25, 0.25, 0.15, 0.1],
+            vec![0.1, 0.3, 0.3, 0.2, 0.1],
+            vec![0.2, 0.2, 0.2, 0.2, 0.2],
+        ];
+
+        let eps = 0.005;
+        let bias = 1.2;
+        let tau = 0.01;
+        let h = 1e-6;
+
+        let (geps, gh, gtau) = eps_grad(
+            eps,
+            bias,
+            tau,
+            &ref_counts,
+            &total_counts,
+            &posteriors,
+            ploidy,
+        );
+
+        let fd = |delta_eps: f64, delta_bias: f64, delta_tau: f64| {
+            let e1 = (eps + delta_eps).clamp(1e-9, 0.05);
+            let h1 = (bias + delta_bias).clamp(1e-6, 1e6);
+            let t1 = (tau + delta_tau).clamp(1e-9, 0.99);
+            eps_obj(e1, h1, t1, &ref_counts, &total_counts, &posteriors, ploidy)
+        };
+
+        let g_fd_eps = (fd(h, 0.0, 0.0) - fd(-h, 0.0, 0.0)) / (2.0 * h);
+        let g_fd_bias = (fd(0.0, h, 0.0) - fd(0.0, -h, 0.0)) / (2.0 * h);
+        let g_fd_tau = (fd(0.0, 0.0, h) - fd(0.0, 0.0, -h)) / (2.0 * h);
+
+        assert_relative_eq!(geps, g_fd_eps, epsilon = 1e-3, max_relative = 1e-3);
+        assert_relative_eq!(gh, g_fd_bias, epsilon = 1e-3, max_relative = 1e-3);
+        assert_relative_eq!(gtau, g_fd_tau, epsilon = 1e-3, max_relative = 1e-3);
+    }
 }

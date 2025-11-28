@@ -52,7 +52,12 @@ pub fn run_dosage(
     }
 
     for locus in loci {
-        match run_norm_model(&locus.ref_counts, &locus.total_counts, ploidy, mode) {
+        match run_norm_model(
+            &locus.ref_counts,
+            &locus.total_counts,
+            ploidy,
+            mode,
+        ) {
             Ok(mut res) => {
                 res.locus_id = locus.id;
 
