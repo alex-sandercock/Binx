@@ -17,8 +17,11 @@ const PRIOR_VAR_LOGIT_SEQ: f64 = 1.0;
 const PRIOR_MEAN_LOGIT_RHO: f64 = -5.5;
 const PRIOR_VAR_LOGIT_RHO: f64 = 0.5 * 0.5; // Updog default 0.25
 const MIN_SIGMA: f64 = 1e-3;
+const MIN_SIGMA_RELAXED: f64 = 1e-8;
 const NEG_INF_FALLBACK: f64 = -1.0e30;
 const LN_2PI: f64 = 1.8378770664093453; // ln(2*pi)
+// R updog uses optim(..., maxit = 20); mirror that in our LBFGS calls to avoid extra line-search work.
+const LBFGS_MAX_ITERS: u64 = 20;
 
 #[derive(Clone, Copy)]
 pub(crate) struct Bounds {
@@ -54,7 +57,7 @@ impl Bounds {
             rho_max: 0.999999,
             seq_min: 1e-6,
             seq_max: 0.05,
-            sigma_min: 1e-8,
+            sigma_min: MIN_SIGMA_RELAXED,
             sigma_max: 1000.0,
         }
     }
@@ -69,6 +72,8 @@ pub enum FitMode {
     Updog,
     /// Updog validation with relaxed bounds matching R implementation
     UpdogExact,
+    /// Hybrid sprint with 5 Updog starts: short sprint on all, then converge winner
+    UpdogFast,
     /// Fast mode: single start at bias=1.0
     Fast,
 }
@@ -194,6 +199,7 @@ impl<'a> EMState<'a> {
             &weights,
             self.ploidy,
             self.bounds,
+            self.use_joint_eps_update,
         );
         self.mu = new_mu;
         self.sigma = new_sigma;
@@ -357,6 +363,18 @@ pub(crate) fn fit_norm_with_mode_and_bounds(
         FitMode::Updog => {
             // Full multi-start: ALL 5 starts to convergence, pick best (matches R package)
             fit_norm_full_multistart(
+                ref_counts,
+                total_counts,
+                ploidy,
+                vec![0.368, 0.607, 1.0, 1.649, 2.718],
+                bounds,
+                use_joint_eps,
+                tolerance,
+            )
+        }
+        FitMode::UpdogFast => {
+            // Hybrid sprint but with the full Updog start set
+            fit_norm_hybrid_sprint(
                 ref_counts,
                 total_counts,
                 ploidy,
@@ -594,7 +612,39 @@ fn optimize_mu_sigma(
     weights: &[f64],
     ploidy: usize,
     bounds: Bounds,
+    use_lbfgs: bool,
 ) -> (f64, f64) {
+    if use_lbfgs {
+        let init = Array1::from(vec![
+            current_mu,
+            current_sigma.max(bounds.sigma_min),
+        ]);
+
+        let problem = MuSigmaProblem {
+            weights,
+            ploidy,
+            bounds,
+        };
+
+        let linesearch = MoreThuenteLineSearch::new();
+        let solver = LBFGS::new(linesearch, 5)
+            .with_tolerance_grad(1e-6)
+            .unwrap();
+
+        let res = Executor::new(problem, solver)
+            .configure(|state| state.param(init.clone()).max_iters(LBFGS_MAX_ITERS))
+            .run();
+
+        let best = match res {
+            Ok(r) => r.state.best_param.unwrap_or(init),
+            Err(_) => init,
+        };
+
+        let mu = best[0].clamp(-1.0, (ploidy as f64) + 1.0);
+        let sigma = best[1].clamp(bounds.sigma_min, bounds.sigma_max);
+        return (mu, sigma);
+    }
+
     let mut mu = current_mu;
     let sigma_upper = bounds.sigma_max.max((ploidy as f64) + 2.0);
     let mut sigma = current_sigma.max(bounds.sigma_min);
@@ -635,6 +685,69 @@ fn lnorm_obj(mu: f64, sigma: f64, weights: &[f64], ploidy: usize) -> f64 {
         obj += weights[k] * (log_probs[k] - lse);
     }
     obj
+}
+
+struct MuSigmaProblem<'a> {
+    weights: &'a [f64],
+    ploidy: usize,
+    bounds: Bounds,
+}
+
+impl<'a> CostFunction for MuSigmaProblem<'a> {
+    type Param = Array1<f64>;
+    type Output = f64;
+
+    fn cost(&self, param: &Self::Param) -> Result<Self::Output, ArgminError> {
+        let mu = param[0].clamp(-1.0, (self.ploidy as f64) + 1.0);
+        let sigma = param[1].clamp(self.bounds.sigma_min, self.bounds.sigma_max);
+        Ok(-lnorm_obj(mu, sigma, self.weights, self.ploidy))
+    }
+}
+
+impl<'a> Gradient for MuSigmaProblem<'a> {
+    type Param = Array1<f64>;
+    type Gradient = Array1<f64>;
+
+    fn gradient(&self, param: &Self::Param) -> Result<Self::Gradient, ArgminError> {
+        let mu = param[0].clamp(-1.0, (self.ploidy as f64) + 1.0);
+        let sigma = param[1].clamp(self.bounds.sigma_min, self.bounds.sigma_max);
+
+        // Analytic gradient (Updog's grad_for_weighted_lnorm)
+        let mut log_probs = Vec::with_capacity(self.ploidy + 1);
+        for k in 0..=self.ploidy {
+            let diff = (k as f64) - mu;
+            let logp = -0.5 * (LN_2PI + 2.0 * sigma.ln()) - (diff * diff) / (2.0 * sigma * sigma);
+            log_probs.push(logp);
+        }
+        let lse = log_sum_exp(&log_probs);
+        let sum_w: f64 = self.weights.iter().sum();
+        if sum_w <= 0.0 {
+            return Ok(Array1::from(vec![0.0, 0.0]));
+        }
+
+        let mut pvec = Vec::with_capacity(self.ploidy + 1);
+        for k in 0..=self.ploidy {
+            pvec.push((log_probs[k] - lse).exp());
+        }
+
+        let mut g_mu = 0.0;
+        let mut g_sigma = 0.0;
+        for k in 0..=self.ploidy {
+            let delta = (k as f64) - mu;
+            g_mu += self.weights[k] * delta;
+            g_sigma += self.weights[k] * delta * delta;
+        }
+        for k in 0..=self.ploidy {
+            let delta = (k as f64) - mu;
+            g_mu -= sum_w * delta * pvec[k];
+            g_sigma -= sum_w * delta * delta * pvec[k];
+        }
+
+        g_mu /= sigma * sigma;
+        g_sigma /= sigma * sigma * sigma;
+
+        Ok(Array1::from(vec![-g_mu, -g_sigma]))
+    }
 }
 
 fn prior_penalty(bias: f64, seq_error: f64, rho: f64) -> f64 {
@@ -825,10 +938,11 @@ fn optimize_eps_joint(
     ploidy: usize,
     bounds: Bounds,
 ) -> (f64, f64, f64) {
+    // Param order: [seq, bias, rho]
     let init = Array1::from(vec![
+        init_seq.clamp(bounds.seq_min, bounds.seq_max),
         init_bias.clamp(bounds.bias_min, bounds.bias_max),
         init_rho.clamp(bounds.rho_min, bounds.rho_max),
-        init_seq.clamp(bounds.seq_min, bounds.seq_max),
     ]);
 
     let problem = EpsProblem {
@@ -845,7 +959,7 @@ fn optimize_eps_joint(
         .unwrap();
 
     let res = Executor::new(problem, solver)
-        .configure(|state| state.param(init.clone()).max_iters(75))
+        .configure(|state| state.param(init.clone()).max_iters(LBFGS_MAX_ITERS))
         .run();
 
     let best = match res {
@@ -853,9 +967,9 @@ fn optimize_eps_joint(
         Err(_) => init,
     };
 
-    let bias = best[0].clamp(bounds.bias_min, bounds.bias_max);
-    let rho = best[1].clamp(bounds.rho_min, bounds.rho_max);
-    let eps = best[2].clamp(bounds.seq_min, bounds.seq_max);
+    let eps = best[0].clamp(bounds.seq_min, bounds.seq_max);
+    let bias = best[1].clamp(bounds.bias_min, bounds.bias_max);
+    let rho = best[2].clamp(bounds.rho_min, bounds.rho_max);
     (bias, rho, eps)
 }
 
@@ -872,9 +986,9 @@ impl<'a> CostFunction for EpsProblem<'a> {
     type Output = f64;
 
     fn cost(&self, param: &Self::Param) -> Result<Self::Output, ArgminError> {
-        let bias = param[0].clamp(self.bounds.bias_min, self.bounds.bias_max);
-        let rho = param[1].clamp(self.bounds.rho_min, self.bounds.rho_max);
-        let eps = param[2].clamp(self.bounds.seq_min, self.bounds.seq_max);
+        let eps = param[0].clamp(self.bounds.seq_min, self.bounds.seq_max);
+        let bias = param[1].clamp(self.bounds.bias_min, self.bounds.bias_max);
+        let rho = param[2].clamp(self.bounds.rho_min, self.bounds.rho_max);
         Ok(-eps_obj(
             eps,
             bias,
@@ -892,9 +1006,9 @@ impl<'a> Gradient for EpsProblem<'a> {
     type Gradient = Array1<f64>;
 
     fn gradient(&self, param: &Self::Param) -> Result<Self::Gradient, ArgminError> {
-        let bias = param[0].clamp(self.bounds.bias_min, self.bounds.bias_max);
-        let rho = param[1].clamp(self.bounds.rho_min, self.bounds.rho_max);
-        let eps = param[2].clamp(self.bounds.seq_min, self.bounds.seq_max);
+        let eps = param[0].clamp(self.bounds.seq_min, self.bounds.seq_max);
+        let bias = param[1].clamp(self.bounds.bias_min, self.bounds.bias_max);
+        let rho = param[2].clamp(self.bounds.rho_min, self.bounds.rho_max);
 
         let (geps, gh, gtau) = eps_grad(
             eps,
@@ -907,7 +1021,8 @@ impl<'a> Gradient for EpsProblem<'a> {
         );
 
         // Negate for minimization
-        Ok(Array1::from(vec![-gh, -gtau, -geps]))
+        // Param order: [seq, bias, rho] -> gradient order [-geps, -gh, -gtau]
+        Ok(Array1::from(vec![-geps, -gh, -gtau]))
     }
 }
 

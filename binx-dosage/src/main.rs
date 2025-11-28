@@ -4,12 +4,13 @@ use std::env;
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
-        eprintln!("Usage: binx-dosage <csv_file> <ploidy> [--mode <auto|updog|updog-exact|fast>] [--verbose]");
+        eprintln!("Usage: binx-dosage <csv_file> <ploidy> [--mode <auto|updog|updog-fast|updog-exact|fast>] [--verbose]");
         eprintln!("CSV Format: Alternating lines of Ref counts and Total counts per locus.");
         eprintln!();
         eprintln!("Options:");
         eprintln!("  --mode auto     Hybrid sprint (3 starts: 0.5, 1.0, 2.0) - Default");
         eprintln!("  --mode updog    Full validation (5 starts like R package) with Binx bounds");
+        eprintln!("  --mode updog-fast Hybrid sprint with 5 Updog starts (faster, still thorough)");
         eprintln!("  --mode updog-exact Full validation with relaxed bounds matching Updog");
         eprintln!("  --mode fast     Single start at bias=1.0 (fastest)");
         eprintln!("  --verbose       Print detailed progress");
@@ -25,10 +26,11 @@ fn main() -> anyhow::Result<()> {
         match mode_str.as_str() {
             "auto" => FitMode::Auto,
             "updog" => FitMode::Updog,
+            "updog-fast" => FitMode::UpdogFast,
             "fast" => FitMode::Fast,
             "updog-exact" => FitMode::UpdogExact,
             _ => {
-                eprintln!("Invalid mode: {}. Use 'auto', 'updog', 'updog-exact', or 'fast'", mode_str);
+                eprintln!("Invalid mode: {}. Use 'auto', 'updog', 'updog-fast', 'updog-exact', or 'fast'", mode_str);
                 std::process::exit(1);
             }
         }
