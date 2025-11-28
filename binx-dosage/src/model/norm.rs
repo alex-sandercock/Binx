@@ -1,5 +1,8 @@
 use crate::math::{prob_ref_read, log_sum_exp, discretized_normal_probs, log_beta_binomial_pdf};
 use crate::GenotypeResult;
+use argmin::core::{CostFunction, Error as ArgminError, Executor, Gradient};
+use argmin::solver::linesearch::MoreThuenteLineSearch;
+use argmin::solver::quasinewton::LBFGS;
 use ndarray::Array1;
 use statrs::function::gamma::digamma;
 
@@ -823,12 +826,12 @@ fn optimize_eps_joint(
     bounds: Bounds,
 ) -> (f64, f64, f64) {
     let init = Array1::from(vec![
-        init_seq.clamp(bounds.seq_min, bounds.seq_max),
         init_bias.clamp(bounds.bias_min, bounds.bias_max),
         init_rho.clamp(bounds.rho_min, bounds.rho_max),
+        init_seq.clamp(bounds.seq_min, bounds.seq_max),
     ]);
 
-    let objective = EpsObjective {
+    let problem = EpsProblem {
         ref_counts,
         total_counts,
         posteriors,
@@ -836,49 +839,76 @@ fn optimize_eps_joint(
         bounds,
     };
 
-    // Simple projected gradient ascent fallback
-    let mut eps = init[0];
-    let mut bias = init[1];
-    let mut rho = init[2];
+    let linesearch = MoreThuenteLineSearch::new();
+    let solver = LBFGS::new(linesearch, 5)
+        .with_tolerance_grad(1e-6)
+        .unwrap();
 
-    let mut current = eps_obj(eps, bias, rho, ref_counts, total_counts, posteriors, ploidy);
-    for iter in 0..75 {
-        let (geps, gh, gtau) = eps_grad(eps, bias, rho, ref_counts, total_counts, posteriors, ploidy);
-        let gnorm = (geps * geps + gh * gh + gtau * gtau).sqrt();
-        if gnorm < 1e-5 {
-            break;
-        }
-        let mut step = 0.1 / (1.0 + iter as f64 * 0.05);
-        let mut improved = false;
-        for _ in 0..10 {
-            let new_eps = (eps + step * geps).clamp(bounds.seq_min, bounds.seq_max);
-            let new_bias = (bias + step * gh).clamp(bounds.bias_min, bounds.bias_max);
-            let new_rho = (rho + step * gtau).clamp(bounds.rho_min, bounds.rho_max);
-            let new_obj = eps_obj(new_eps, new_bias, new_rho, ref_counts, total_counts, posteriors, ploidy);
-            if new_obj > current {
-                eps = new_eps;
-                bias = new_bias;
-                rho = new_rho;
-                current = new_obj;
-                improved = true;
-                break;
-            }
-            step *= 0.5;
-        }
-        if !improved {
-            break;
-        }
-    }
+    let res = Executor::new(problem, solver)
+        .configure(|state| state.param(init.clone()).max_iters(75))
+        .run();
 
+    let best = match res {
+        Ok(r) => r.state.best_param.unwrap_or(init),
+        Err(_) => init,
+    };
+
+    let bias = best[0].clamp(bounds.bias_min, bounds.bias_max);
+    let rho = best[1].clamp(bounds.rho_min, bounds.rho_max);
+    let eps = best[2].clamp(bounds.seq_min, bounds.seq_max);
     (bias, rho, eps)
 }
 
-struct EpsObjective<'a> {
+struct EpsProblem<'a> {
     ref_counts: &'a Array1<u32>,
     total_counts: &'a Array1<u32>,
     posteriors: &'a [Vec<f64>],
     ploidy: usize,
     bounds: Bounds,
+}
+
+impl<'a> CostFunction for EpsProblem<'a> {
+    type Param = Array1<f64>;
+    type Output = f64;
+
+    fn cost(&self, param: &Self::Param) -> Result<Self::Output, ArgminError> {
+        let bias = param[0].clamp(self.bounds.bias_min, self.bounds.bias_max);
+        let rho = param[1].clamp(self.bounds.rho_min, self.bounds.rho_max);
+        let eps = param[2].clamp(self.bounds.seq_min, self.bounds.seq_max);
+        Ok(-eps_obj(
+            eps,
+            bias,
+            rho,
+            self.ref_counts,
+            self.total_counts,
+            self.posteriors,
+            self.ploidy,
+        ))
+    }
+}
+
+impl<'a> Gradient for EpsProblem<'a> {
+    type Param = Array1<f64>;
+    type Gradient = Array1<f64>;
+
+    fn gradient(&self, param: &Self::Param) -> Result<Self::Gradient, ArgminError> {
+        let bias = param[0].clamp(self.bounds.bias_min, self.bounds.bias_max);
+        let rho = param[1].clamp(self.bounds.rho_min, self.bounds.rho_max);
+        let eps = param[2].clamp(self.bounds.seq_min, self.bounds.seq_max);
+
+        let (geps, gh, gtau) = eps_grad(
+            eps,
+            bias,
+            rho,
+            self.ref_counts,
+            self.total_counts,
+            self.posteriors,
+            self.ploidy,
+        );
+
+        // Negate for minimization
+        Ok(Array1::from(vec![-gh, -gtau, -geps]))
+    }
 }
 
 
