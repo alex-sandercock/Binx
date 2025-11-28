@@ -141,7 +141,7 @@ enum Commands {
         #[arg(long)]
         ploidy: usize,
 
-        /// Multi-start optimization mode (auto, updog, updog-fast, updog-exact, fast)
+        /// Multi-start optimization mode (auto, updog, updog-fast, updog-exact, fast, turbo, turboauto)
         #[arg(long, default_value = "auto")]
         mode: String,
 
@@ -226,8 +226,10 @@ fn main() -> Result<()> {
                 "updog-fast" => binx_dosage::FitMode::UpdogFast,
                 "updog-exact" => binx_dosage::FitMode::UpdogExact,
                 "fast" => binx_dosage::FitMode::Fast,
+                "turbo" => binx_dosage::FitMode::Turbo,
+                "turboauto" => binx_dosage::FitMode::TurboAuto,
                 _ => {
-                    eprintln!("Invalid mode: {}. Use 'auto', 'updog', 'updog-fast', 'updog-exact', or 'fast'", mode);
+                    eprintln!("Invalid mode: {}. Use 'auto', 'updog', 'updog-fast', 'updog-exact', 'fast', 'turbo', or 'turboauto'", mode);
                     std::process::exit(1);
                 }
             };

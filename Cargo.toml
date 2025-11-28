@@ -6,6 +6,7 @@ members = [
     "binx-kinship",
     "binx-cli",
     "binx-dosage",
+    "binx-convert",
 ]
 
 resolver = "2"

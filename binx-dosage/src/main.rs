@@ -5,7 +5,7 @@ fn main() -> anyhow::Result<()> {
     let argv: Vec<String> = env::args().skip(1).collect();
     if argv.is_empty() {
         eprintln!("Usage:");
-        eprintln!("  binx-dosage <csv_file> <ploidy> [--mode <auto|updog|updog-fast|updog-exact|fast>] [--format <matrix|stats|beagle|vcf|plink|gwaspoly>] [--compress <none|gzip>] [--threads N] [--output <path>] [--verbose]");
+        eprintln!("  binx-dosage <csv_file> <ploidy> [--mode <auto|updog|updog-fast|updog-exact|fast|turbo|turboauto>] [--format <matrix|stats|beagle|vcf|plink|gwaspoly>] [--compress <none|gzip>] [--threads N] [--output <path>] [--verbose]");
         eprintln!("    CSV Format: Alternating lines of Ref counts and Total counts per locus.");
         eprintln!("  binx-dosage --counts --ref-path <ref_matrix.csv> --total-path <total_matrix.csv> <ploidy> [--mode ...] [--format ...] [--compress ...] [--threads N] [--output <path>] [--verbose]");
         eprintln!("    Matrix Format: markers in rows, samples in columns; first column is marker ID, header row has samples.");
@@ -18,6 +18,8 @@ fn main() -> anyhow::Result<()> {
         eprintln!("  --mode updog-fast Hybrid sprint with 5 Updog starts (faster, still thorough)");
         eprintln!("  --mode updog-exact Full validation with relaxed bounds matching Updog");
         eprintln!("  --mode fast     Single start at bias=1.0 (fastest)");
+        eprintln!("  --mode turbo    Parallel E-step, single start (8-10x faster than fast)");
+        eprintln!("  --mode turboauto Parallel E-step, 3-start sprint (8-10x faster than auto)");
         eprintln!("  --format matrix | stats | beagle | vcf | plink | gwaspoly (default: matrix)");
         eprintln!("  --compress none | gzip (default: none)");
         eprintln!("  --chunk-size N  Process VCF records in batches of N (default: 256; set 0 to stream one by one)");
@@ -84,8 +86,10 @@ fn main() -> anyhow::Result<()> {
                     "updog-fast" => FitMode::UpdogFast,
                     "fast" => FitMode::Fast,
                     "updog-exact" => FitMode::UpdogExact,
+                    "turbo" => FitMode::Turbo,
+                    "turboauto" => FitMode::TurboAuto,
                     _ => {
-                        eprintln!("Invalid mode: {}. Use 'auto', 'updog', 'updog-fast', 'updog-exact', or 'fast'", mode_str);
+                        eprintln!("Invalid mode: {}. Use 'auto', 'updog', 'updog-fast', 'updog-exact', 'fast', 'turbo', or 'turboauto'", mode_str);
                         std::process::exit(1);
                     }
                 };

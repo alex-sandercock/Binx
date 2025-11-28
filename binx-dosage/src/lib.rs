@@ -318,7 +318,18 @@ fn run_dosage_streaming(
     // Configure rayon thread pool if requested.
     if let Some(n) = threads {
         if n > 0 {
-            let _ = rayon::ThreadPoolBuilder::new().num_threads(n).build_global();
+            if let Err(e) = rayon::ThreadPoolBuilder::new().num_threads(n).build_global() {
+                eprintln!("Warning: Failed to set Rayon thread pool to {} threads: {}", n, e);
+                eprintln!("         Rayon global pool may have already been initialized.");
+            }
+        }
+    }
+
+    // Always log actual thread count being used
+    let actual_threads = rayon::current_num_threads();
+    if let Some(requested) = threads {
+        if actual_threads != requested {
+            eprintln!("Note: Requested {} threads but Rayon is using {} threads", requested, actual_threads);
         }
     }
 
@@ -453,18 +464,33 @@ fn run_dosage_streaming(
                     break;
                 }
                 let chunk_len = chunk.len();
-                let chunk_results: Vec<LocusOutput> = chunk
-                    .into_par_iter()
-                    .filter_map(|locus| {
-                        let vcf_meta = if let (Some(c), Some(p), Some(r), Some(a)) =
-                            (&locus.vcf_chrom, locus.vcf_pos, &locus.vcf_ref, &locus.vcf_alt) {
-                            Some((c.clone(), p, r.clone(), a.clone()))
-                        } else {
-                            None
-                        };
-                        process_locus(locus.id, locus.ref_counts, locus.total_counts, vcf_meta)
-                    })
-                    .collect();
+                let chunk_results: Vec<LocusOutput> = if matches!(mode, FitMode::Turbo | FitMode::TurboAuto) {
+                    chunk
+                        .into_iter()
+                        .filter_map(|locus| {
+                            let vcf_meta = if let (Some(c), Some(p), Some(r), Some(a)) =
+                                (&locus.vcf_chrom, locus.vcf_pos, &locus.vcf_ref, &locus.vcf_alt) {
+                                Some((c.clone(), p, r.clone(), a.clone()))
+                            } else {
+                                None
+                            };
+                            process_locus(locus.id, locus.ref_counts, locus.total_counts, vcf_meta)
+                        })
+                        .collect()
+                } else {
+                    chunk
+                        .into_par_iter()
+                        .filter_map(|locus| {
+                            let vcf_meta = if let (Some(c), Some(p), Some(r), Some(a)) =
+                                (&locus.vcf_chrom, locus.vcf_pos, &locus.vcf_ref, &locus.vcf_alt) {
+                                Some((c.clone(), p, r.clone(), a.clone()))
+                            } else {
+                                None
+                            };
+                            process_locus(locus.id, locus.ref_counts, locus.total_counts, vcf_meta)
+                        })
+                        .collect()
+                };
 
                 writer.write_chunk(&chunk_results)?;
                 processed += chunk_len;
@@ -489,14 +515,25 @@ fn run_dosage_streaming(
             while start_idx < total {
                 let end = (start_idx + chunk_size).min(total);
                 let chunk: Vec<usize> = (start_idx..end).collect();
-                let chunk_results: Vec<LocusOutput> = chunk
-                    .into_par_iter()
-                    .filter_map(|row_idx| {
-                        let ref_counts = matrices.ref_counts.row(row_idx).to_owned();
-                        let total_counts = matrices.total_counts.row(row_idx).to_owned();
-                        process_locus(matrices.marker_ids[row_idx].clone(), ref_counts, total_counts, None)
-                    })
-                    .collect();
+                let chunk_results: Vec<LocusOutput> = if matches!(mode, FitMode::Turbo | FitMode::TurboAuto) {
+                    chunk
+                        .into_iter()
+                        .filter_map(|row_idx| {
+                            let ref_counts = matrices.ref_counts.row(row_idx).to_owned();
+                            let total_counts = matrices.total_counts.row(row_idx).to_owned();
+                            process_locus(matrices.marker_ids[row_idx].clone(), ref_counts, total_counts, None)
+                        })
+                        .collect()
+                } else {
+                    chunk
+                        .into_par_iter()
+                        .filter_map(|row_idx| {
+                            let ref_counts = matrices.ref_counts.row(row_idx).to_owned();
+                            let total_counts = matrices.total_counts.row(row_idx).to_owned();
+                            process_locus(matrices.marker_ids[row_idx].clone(), ref_counts, total_counts, None)
+                        })
+                        .collect()
+                };
 
                 writer.write_chunk(&chunk_results)?;
                 processed += end - start_idx;
@@ -505,7 +542,11 @@ fn run_dosage_streaming(
             }
         }
         InputSource::Vcf { path, chunk_size } => {
-            let chunk_size = chunk_size.unwrap_or_else(adaptive_chunk_size);
+            let mut chunk_size = chunk_size.unwrap_or_else(adaptive_chunk_size);
+            // Turbo modes benefit from smaller chunks to surface progress sooner and avoid long, silent batches
+            if matches!(mode, FitMode::Turbo | FitMode::TurboAuto) {
+                chunk_size = chunk_size.min(64).max(1);
+            }
 
             // Pre-count VCF records for progress bar with ETA
             let total_loci = if verbose {
@@ -539,6 +580,7 @@ fn run_dosage_streaming(
             let sample_names_opt = RefCell::new(None::<Vec<String>>);
             let header_written = RefCell::new(false);
             let writer_cell = RefCell::new(writer);
+            let write_error = RefCell::new(None::<anyhow::Error>);
 
             io::stream_vcf_records(&path, |names| {
                 *sample_names_opt.borrow_mut() = Some(names.to_vec());
@@ -554,7 +596,10 @@ fn run_dosage_streaming(
                 if chunk_size == 0 {
                     let vcf_meta = Some((rec.chrom.clone(), rec.pos, rec.ref_allele.clone(), rec.alt_allele.clone()));
                     if let Some(res) = process_locus(rec.id, rec.ref_counts, rec.total_counts, vcf_meta) {
-                        let _ = writer_cell.borrow_mut().write_chunk(&[res]);
+                        if let Err(e) = writer_cell.borrow_mut().write_chunk(&[res]) {
+                            *write_error.borrow_mut() = Some(e);
+                            return;
+                        }
                         processed += 1;
                         maybe_report_progress(processed, total_loci, &start, &mut last_report);
                     }
@@ -570,20 +615,41 @@ fn run_dosage_streaming(
                     });
                     if buffer.len() >= chunk_size {
                         let chunk: Vec<LocusData> = buffer.drain(..).collect();
-                        let chunk_results: Vec<LocusOutput> = chunk
-                            .into_par_iter()
-                            .filter_map(|locus| {
-                                let vcf_meta = if let (Some(c), Some(p), Some(r), Some(a)) =
-                                    (&locus.vcf_chrom, locus.vcf_pos, &locus.vcf_ref, &locus.vcf_alt) {
-                                    Some((c.clone(), p, r.clone(), a.clone()))
-                                } else {
-                                    None
-                                };
-                                process_locus(locus.id, locus.ref_counts, locus.total_counts, vcf_meta)
-                            })
-                            .collect();
-                        processed += chunk_results.len();
-                        let _ = writer_cell.borrow_mut().write_chunk(&chunk_results);
+                        let chunk_len = chunk.len();
+                        // Conditional parallelism: Turbo modes process loci sequentially (inner parallelism),
+                        // other modes process loci in parallel (outer parallelism)
+                        let chunk_results: Vec<LocusOutput> = if matches!(mode, FitMode::Turbo | FitMode::TurboAuto) {
+                            chunk
+                                .into_iter()  // Sequential for Turbo modes
+                                .filter_map(|locus| {
+                                    let vcf_meta = if let (Some(c), Some(p), Some(r), Some(a)) =
+                                        (&locus.vcf_chrom, locus.vcf_pos, &locus.vcf_ref, &locus.vcf_alt) {
+                                        Some((c.clone(), p, r.clone(), a.clone()))
+                                    } else {
+                                        None
+                                    };
+                                    process_locus(locus.id, locus.ref_counts, locus.total_counts, vcf_meta)
+                                })
+                                .collect()
+                        } else {
+                            chunk
+                                .into_par_iter()  // Parallel for other modes
+                                .filter_map(|locus| {
+                                    let vcf_meta = if let (Some(c), Some(p), Some(r), Some(a)) =
+                                        (&locus.vcf_chrom, locus.vcf_pos, &locus.vcf_ref, &locus.vcf_alt) {
+                                        Some((c.clone(), p, r.clone(), a.clone()))
+                                    } else {
+                                        None
+                                    };
+                                    process_locus(locus.id, locus.ref_counts, locus.total_counts, vcf_meta)
+                                })
+                                .collect()
+                        };
+                        processed += chunk_len;
+                        if let Err(e) = writer_cell.borrow_mut().write_chunk(&chunk_results) {
+                            *write_error.borrow_mut() = Some(e);
+                            return;
+                        }
                         maybe_report_progress(processed, total_loci, &start, &mut last_report);
                     }
                 }
@@ -594,25 +660,46 @@ fn run_dosage_streaming(
             // Flush remaining buffered loci
             if !buffer.is_empty() {
                 let chunk: Vec<LocusData> = buffer.drain(..).collect();
-                let chunk_results: Vec<LocusOutput> = chunk
-                    .into_par_iter()
-                    .filter_map(|locus| {
-                        let vcf_meta = if let (Some(c), Some(p), Some(r), Some(a)) =
-                            (&locus.vcf_chrom, locus.vcf_pos, &locus.vcf_ref, &locus.vcf_alt) {
-                            Some((c.clone(), p, r.clone(), a.clone()))
-                        } else {
-                            None
-                        };
-                        process_locus(locus.id, locus.ref_counts, locus.total_counts, vcf_meta)
-                    })
-                    .collect();
-                processed += chunk_results.len();
+                let chunk_len = chunk.len();
+                // Conditional parallelism for flush (same as main processing)
+                let chunk_results: Vec<LocusOutput> = if matches!(mode, FitMode::Turbo | FitMode::TurboAuto) {
+                    chunk
+                        .into_iter()  // Sequential for Turbo modes
+                        .filter_map(|locus| {
+                            let vcf_meta = if let (Some(c), Some(p), Some(r), Some(a)) =
+                                (&locus.vcf_chrom, locus.vcf_pos, &locus.vcf_ref, &locus.vcf_alt) {
+                                Some((c.clone(), p, r.clone(), a.clone()))
+                            } else {
+                                None
+                            };
+                            process_locus(locus.id, locus.ref_counts, locus.total_counts, vcf_meta)
+                        })
+                        .collect()
+                } else {
+                    chunk
+                        .into_par_iter()  // Parallel for other modes
+                        .filter_map(|locus| {
+                            let vcf_meta = if let (Some(c), Some(p), Some(r), Some(a)) =
+                                (&locus.vcf_chrom, locus.vcf_pos, &locus.vcf_ref, &locus.vcf_alt) {
+                                Some((c.clone(), p, r.clone(), a.clone()))
+                            } else {
+                                None
+                            };
+                            process_locus(locus.id, locus.ref_counts, locus.total_counts, vcf_meta)
+                        })
+                        .collect()
+                };
+                processed += chunk_len;
                 writer.write_chunk(&chunk_results)?;
                 maybe_report_progress(processed, None, &start, &mut last_report);
             }
 
             if sample_names_opt.borrow().is_none() {
                 return Err(anyhow::anyhow!("VCF header with sample names was not found"));
+            }
+
+            if let Some(e) = write_error.into_inner() {
+                return Err(anyhow::anyhow!("Failed to write output chunk: {}", e));
             }
 
             writer.finish()?;
@@ -649,7 +736,18 @@ fn run_dosage_collected(
     // Configure rayon thread pool if requested.
     if let Some(n) = threads {
         if n > 0 {
-            let _ = rayon::ThreadPoolBuilder::new().num_threads(n).build_global();
+            if let Err(e) = rayon::ThreadPoolBuilder::new().num_threads(n).build_global() {
+                eprintln!("Warning: Failed to set Rayon thread pool to {} threads: {}", n, e);
+                eprintln!("         Rayon global pool may have already been initialized.");
+            }
+        }
+    }
+
+    // Always log actual thread count being used
+    let actual_threads = rayon::current_num_threads();
+    if let Some(requested) = threads {
+        if actual_threads != requested {
+            eprintln!("Note: Requested {} threads but Rayon is using {} threads", requested, actual_threads);
         }
     }
 
@@ -781,18 +879,33 @@ fn run_dosage_collected(
                     break;
                 }
                 let chunk_len = chunk.len();
-                let chunk_results: Vec<LocusOutput> = chunk
-                    .into_par_iter()
-                    .filter_map(|locus| {
-                        let vcf_meta = if let (Some(c), Some(p), Some(r), Some(a)) =
-                            (&locus.vcf_chrom, locus.vcf_pos, &locus.vcf_ref, &locus.vcf_alt) {
-                            Some((c.clone(), p, r.clone(), a.clone()))
-                        } else {
-                            None
-                        };
-                        process_locus(locus.id, locus.ref_counts, locus.total_counts, vcf_meta)
-                    })
-                    .collect();
+                let chunk_results: Vec<LocusOutput> = if matches!(mode, FitMode::Turbo | FitMode::TurboAuto) {
+                    chunk
+                        .into_iter()
+                        .filter_map(|locus| {
+                            let vcf_meta = if let (Some(c), Some(p), Some(r), Some(a)) =
+                                (&locus.vcf_chrom, locus.vcf_pos, &locus.vcf_ref, &locus.vcf_alt) {
+                                Some((c.clone(), p, r.clone(), a.clone()))
+                            } else {
+                                None
+                            };
+                            process_locus(locus.id, locus.ref_counts, locus.total_counts, vcf_meta)
+                        })
+                        .collect()
+                } else {
+                    chunk
+                        .into_par_iter()
+                        .filter_map(|locus| {
+                            let vcf_meta = if let (Some(c), Some(p), Some(r), Some(a)) =
+                                (&locus.vcf_chrom, locus.vcf_pos, &locus.vcf_ref, &locus.vcf_alt) {
+                                Some((c.clone(), p, r.clone(), a.clone()))
+                            } else {
+                                None
+                            };
+                            process_locus(locus.id, locus.ref_counts, locus.total_counts, vcf_meta)
+                        })
+                        .collect()
+                };
                 all_results.extend(chunk_results);
                 processed += chunk_len;
                 maybe_report_progress(processed, Some(total), &start, &mut last_report);
@@ -816,14 +929,25 @@ fn run_dosage_collected(
             while start_idx < total {
                 let end = (start_idx + chunk_size).min(total);
                 let chunk: Vec<usize> = (start_idx..end).collect();
-                let chunk_results: Vec<LocusOutput> = chunk
-                    .into_par_iter()
-                    .filter_map(|row_idx| {
-                        let ref_counts = matrices.ref_counts.row(row_idx).to_owned();
-                        let total_counts = matrices.total_counts.row(row_idx).to_owned();
-                        process_locus(matrices.marker_ids[row_idx].clone(), ref_counts, total_counts, None)
-                    })
-                    .collect();
+                let chunk_results: Vec<LocusOutput> = if matches!(mode, FitMode::Turbo | FitMode::TurboAuto) {
+                    chunk
+                        .into_iter()
+                        .filter_map(|row_idx| {
+                            let ref_counts = matrices.ref_counts.row(row_idx).to_owned();
+                            let total_counts = matrices.total_counts.row(row_idx).to_owned();
+                            process_locus(matrices.marker_ids[row_idx].clone(), ref_counts, total_counts, None)
+                        })
+                        .collect()
+                } else {
+                    chunk
+                        .into_par_iter()
+                        .filter_map(|row_idx| {
+                            let ref_counts = matrices.ref_counts.row(row_idx).to_owned();
+                            let total_counts = matrices.total_counts.row(row_idx).to_owned();
+                            process_locus(matrices.marker_ids[row_idx].clone(), ref_counts, total_counts, None)
+                        })
+                        .collect()
+                };
                 all_results.extend(chunk_results);
                 processed += end - start_idx;
                 maybe_report_progress(processed, Some(total), &start, &mut last_report);
@@ -832,7 +956,10 @@ fn run_dosage_collected(
             (all_results, sample_names)
         }
         InputSource::Vcf { path, chunk_size } => {
-            let chunk_size = chunk_size.unwrap_or_else(adaptive_chunk_size);
+            let mut chunk_size = chunk_size.unwrap_or_else(adaptive_chunk_size);
+            if matches!(mode, FitMode::Turbo | FitMode::TurboAuto) {
+                chunk_size = chunk_size.min(64).max(1);
+            }
 
             // Pre-count VCF records for progress bar with ETA
             let total_loci = if verbose {
@@ -910,19 +1037,36 @@ fn run_dosage_collected(
             // Flush remaining buffered loci
             if !buffer.is_empty() {
                 let chunk: Vec<LocusData> = buffer.drain(..).collect();
-                let chunk_results: Vec<LocusOutput> = chunk
-                    .into_par_iter()
-                    .filter_map(|locus| {
-                        let vcf_meta = if let (Some(c), Some(p), Some(r), Some(a)) =
-                            (&locus.vcf_chrom, locus.vcf_pos, &locus.vcf_ref, &locus.vcf_alt) {
-                            Some((c.clone(), p, r.clone(), a.clone()))
-                        } else {
-                            None
-                        };
-                        process_locus(locus.id, locus.ref_counts, locus.total_counts, vcf_meta)
-                    })
-                    .collect();
-                processed += chunk_results.len();
+                let chunk_len = chunk.len();
+                // Conditional parallelism for flush (same as main processing)
+                let chunk_results: Vec<LocusOutput> = if matches!(mode, FitMode::Turbo | FitMode::TurboAuto) {
+                    chunk
+                        .into_iter()  // Sequential for Turbo modes
+                        .filter_map(|locus| {
+                            let vcf_meta = if let (Some(c), Some(p), Some(r), Some(a)) =
+                                (&locus.vcf_chrom, locus.vcf_pos, &locus.vcf_ref, &locus.vcf_alt) {
+                                Some((c.clone(), p, r.clone(), a.clone()))
+                            } else {
+                                None
+                            };
+                            process_locus(locus.id, locus.ref_counts, locus.total_counts, vcf_meta)
+                        })
+                        .collect()
+                } else {
+                    chunk
+                        .into_par_iter()  // Parallel for other modes
+                        .filter_map(|locus| {
+                            let vcf_meta = if let (Some(c), Some(p), Some(r), Some(a)) =
+                                (&locus.vcf_chrom, locus.vcf_pos, &locus.vcf_ref, &locus.vcf_alt) {
+                                Some((c.clone(), p, r.clone(), a.clone()))
+                            } else {
+                                None
+                            };
+                            process_locus(locus.id, locus.ref_counts, locus.total_counts, vcf_meta)
+                        })
+                        .collect()
+                };
+                processed += chunk_len;
                 all_results.extend(chunk_results);
                 maybe_report_progress(processed, None, &start, &mut last_report);
             }

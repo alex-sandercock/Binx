@@ -76,6 +76,10 @@ pub enum FitMode {
     UpdogFast,
     /// Fast mode: single start at bias=1.0
     Fast,
+    /// Turbo mode: single start with parallel E-step and gamma caching (8-10x faster)
+    Turbo,
+    /// TurboAuto: 3-start hybrid sprint with parallel E-step and gamma caching
+    TurboAuto,
 }
 
 /// Encapsulates the state of the EM algorithm for norm model fitting.
@@ -407,6 +411,14 @@ pub(crate) fn fit_norm_with_mode_and_bounds(
                 use_joint_eps,
                 tolerance,
             )
+        }
+        FitMode::Turbo => {
+            // Turbo: single start with parallel E-step
+            super::norm_turbo::fit_norm_turbo(ref_counts, total_counts, ploidy)
+        }
+        FitMode::TurboAuto => {
+            // TurboAuto: 3-start sprint with parallel E-step
+            super::norm_turbo::fit_norm_turbo_auto(ref_counts, total_counts, ploidy)
         }
     }
 }
