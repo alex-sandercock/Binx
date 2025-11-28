@@ -107,7 +107,19 @@ enum Commands {
     Dosage {
         /// CSV file with alternating lines of Ref and Total counts per locus
         #[arg(long)]
-        csv: String,
+        csv: Option<String>,
+
+        /// Use matrix mode (requires --ref and --total)
+        #[arg(long, default_value_t = false)]
+        counts: bool,
+
+        /// Ref count matrix (markers in rows, samples in columns; first column marker ID)
+        #[arg(long)]
+        ref_path: Option<String>,
+
+        /// Total count matrix (markers in rows, samples in columns; first column marker ID)
+        #[arg(long)]
+        total_path: Option<String>,
 
         /// Ploidy (e.g., 2, 4, 6)
         #[arg(long)]
@@ -183,7 +195,7 @@ fn main() -> Result<()> {
         Commands::Kinship { geno, ploidy, out } => {
             binx_kinship::run_kinship(&geno, ploidy, &out)?;
         }
-        Commands::Dosage { csv, ploidy, mode, verbose } => {
+        Commands::Dosage { csv, counts, ref_path, total_path, ploidy, mode, verbose } => {
             let fit_mode = match mode.as_str() {
                 "auto" => binx_dosage::FitMode::Auto,
                 "updog" => binx_dosage::FitMode::Updog,
@@ -195,7 +207,28 @@ fn main() -> Result<()> {
                     std::process::exit(1);
                 }
             };
-            binx_dosage::run_dosage(&csv, ploidy, fit_mode, verbose)?;
+            let input = if counts {
+                let ref_path = ref_path.unwrap_or_else(|| {
+                    eprintln!("--counts requires --ref <path>");
+                    std::process::exit(1);
+                });
+                let total_path = total_path.unwrap_or_else(|| {
+                    eprintln!("--counts requires --total <path>");
+                    std::process::exit(1);
+                });
+                if csv.is_some() {
+                    eprintln!("Do not provide --csv when using --counts");
+                    std::process::exit(1);
+                }
+                binx_dosage::InputSource::RefTotalMatrices { ref_path, total_path }
+            } else {
+                let csv_path = csv.unwrap_or_else(|| {
+                    eprintln!("--csv is required unless --counts is set");
+                    std::process::exit(1);
+                });
+                binx_dosage::InputSource::TwoLineCsv(csv_path)
+            };
+            binx_dosage::run_dosage(input, ploidy, fit_mode, verbose)?;
         }
     }
 

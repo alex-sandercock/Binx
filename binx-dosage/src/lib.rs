@@ -3,6 +3,7 @@ pub mod math;
 pub mod model;
 
 use ndarray::Array1;
+use io::{LocusData, MatrixData};
 
 // Re-export FitMode for CLI usage
 pub use model::FitMode;
@@ -21,6 +22,14 @@ pub struct GenotypeResult {
     pub final_log_lik: f64,
 }
 
+/// Input source for dosage estimation.
+pub enum InputSource {
+    /// Legacy two-line CSV (alternating ref/total rows).
+    TwoLineCsv(String),
+    /// Separate ref/total matrices (markers in rows, samples in columns).
+    RefTotalMatrices { ref_path: String, total_path: String },
+}
+
 pub fn run_norm_model(
     ref_counts: &Array1<u32>,
     total_counts: &Array1<u32>,
@@ -32,48 +41,89 @@ pub fn run_norm_model(
 
 /// Top-level entry point used by the CLI for genotype dosage estimation.
 pub fn run_dosage(
-    csv_file: &str,
+    input: InputSource,
     ploidy: usize,
     mode: FitMode,
     verbose: bool,
 ) -> anyhow::Result<()> {
-    if verbose {
-        println!("Parsing {}...", csv_file);
+    let loci: Vec<LocusData>;
+    let matrix_input: Option<MatrixData>;
+
+    match input {
+        InputSource::TwoLineCsv(csv_file) => {
+            if verbose {
+                println!("Parsing {}...", csv_file);
+            }
+            loci = io::parse_two_line_csv(&csv_file)
+                .map_err(|e| anyhow::anyhow!("Failed to parse CSV file: {}", e))?;
+            matrix_input = None;
+        }
+        InputSource::RefTotalMatrices { ref_path, total_path } => {
+            if verbose {
+                println!("Parsing ref matrix {} and total matrix {}...", ref_path, total_path);
+            }
+            let matrices = io::parse_ref_total_matrices(&ref_path, &total_path)
+                .map_err(|e| anyhow::anyhow!("Failed to parse ref/total matrices: {}", e))?;
+            matrix_input = Some(matrices);
+            loci = Vec::new(); // not used in this branch
+        }
     }
 
-    let loci = io::parse_two_line_csv(csv_file)
-        .map_err(|e| anyhow::anyhow!("Failed to parse CSV file: {}", e))?;
-
     if verbose {
-        println!("Found {} loci. Running Norm model...", loci.len());
+        let count = if let Some(mat) = &matrix_input { mat.marker_ids.len() } else { loci.len() };
+        println!("Found {} loci. Running Norm model...", count);
         println!("Locus\tBias\tRho\tMu\tSigma\tLogLik\tGenotypes");
     } else {
         println!("Locus\tBias\tRho\tMu\tSigma\tLogLik\tGenotypes");
     }
 
-    for locus in loci {
-        match run_norm_model(
-            &locus.ref_counts,
-            &locus.total_counts,
-            ploidy,
-            mode,
-        ) {
-            Ok(mut res) => {
-                res.locus_id = locus.id;
+    if let Some(mat) = matrix_input {
+        for (row_idx, locus_id) in mat.marker_ids.iter().enumerate() {
+            let ref_counts = mat.ref_counts.row(row_idx).to_owned();
+            let total_counts = mat.total_counts.row(row_idx).to_owned();
 
-                let geno_str: Vec<String> = res.best_genotypes.iter().map(|g| g.to_string()).collect();
+            match run_norm_model(&ref_counts, &total_counts, ploidy, mode) {
+                Ok(mut res) => {
+                    res.locus_id = locus_id.clone();
+                    let geno_str: Vec<String> = res.best_genotypes.iter().map(|g| g.to_string()).collect();
+                    println!("{}\t{:.3}\t{:.4}\t{:.3}\t{:.3}\t{:.2}\t{}",
+                        res.locus_id,
+                        res.bias,
+                        res.overdispersion,
+                        res.model_mu,
+                        res.model_sigma,
+                        res.final_log_lik,
+                        geno_str.join(",")
+                    );
+                },
+                Err(e) => eprintln!("Error processing locus {}: {}", locus_id, e),
+            }
+        }
+    } else {
+        for locus in loci {
+            match run_norm_model(
+                &locus.ref_counts,
+                &locus.total_counts,
+                ploidy,
+                mode,
+            ) {
+                Ok(mut res) => {
+                    res.locus_id = locus.id;
 
-                println!("{}\t{:.3}\t{:.4}\t{:.3}\t{:.3}\t{:.2}\t{}",
-                    res.locus_id,
-                    res.bias,
-                    res.overdispersion,
-                    res.model_mu,
-                    res.model_sigma,
-                    res.final_log_lik,
-                    geno_str.join(",")
-                );
-            },
-            Err(e) => eprintln!("Error processing locus {}: {}", locus.id, e),
+                    let geno_str: Vec<String> = res.best_genotypes.iter().map(|g| g.to_string()).collect();
+
+                    println!("{}\t{:.3}\t{:.4}\t{:.3}\t{:.3}\t{:.2}\t{}",
+                        res.locus_id,
+                        res.bias,
+                        res.overdispersion,
+                        res.model_mu,
+                        res.model_sigma,
+                        res.final_log_lik,
+                        geno_str.join(",")
+                    );
+                },
+                Err(e) => eprintln!("Error processing locus {}: {}", locus.id, e),
+            }
         }
     }
 
