@@ -3,7 +3,7 @@ use std::io::Write;
 
 /// Writes the stats format header.
 pub fn write_header(writer: &mut dyn Write) -> anyhow::Result<()> {
-    writeln!(writer, "SNP_ID\tBias\tRho\tMu\tSigma\tLogLik\tBestGenotypes")?;
+    writeln!(writer, "SNP_ID\tBias\tRho\tMu\tSigma\tLogLik\tBestGenotypes\tMaxPostProb")?;
     Ok(())
 }
 
@@ -22,6 +22,13 @@ pub fn write_chunk(writer: &mut dyn Write, chunk: &[LocusOutput]) -> anyhow::Res
             write!(writer, "{}", first)?;
             for gt in rest {
                 write!(writer, ",{}", gt)?;
+            }
+        }
+        write!(writer, "\t")?;
+        if let Some((first, rest)) = res.max_posteriors.split_first() {
+            write!(writer, "{:.6}", first)?;
+            for q in rest {
+                write!(writer, ",{:.6}", q)?;
             }
         }
         writeln!(writer)?;

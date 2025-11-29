@@ -80,6 +80,8 @@ pub enum FitMode {
     Turbo,
     /// TurboAuto: 3-start hybrid sprint with parallel E-step and gamma caching
     TurboAuto,
+    /// TurboAutoSafe: Turbo with capping + parallel M-step (high-depth friendly)
+    TurboAutoSafe,
 }
 
 /// Encapsulates the state of the EM algorithm for norm model fitting.
@@ -166,6 +168,15 @@ impl<'a> EMState<'a> {
         for i in 0..self.ref_counts.len() {
             let r = self.ref_counts[i];
             let n = self.total_counts[i];
+
+            if n == 0 {
+                // No information: posterior equals prior
+                for k in 0..=self.ploidy {
+                    self.posteriors[i][k] = prior_probs[k];
+                }
+                new_log_lik += 0.0;
+                continue;
+            }
 
             let mut joint_log_probs = Vec::with_capacity(self.ploidy + 1);
 
@@ -292,6 +303,7 @@ impl<'a> EMState<'a> {
     pub fn into_result(self, locus_id: String) -> GenotypeResult {
         let n_samples = self.ref_counts.len();
         let mut best_genotypes = Vec::with_capacity(n_samples);
+        let mut max_posteriors = Vec::with_capacity(n_samples);
 
         for i in 0..n_samples {
             let mut best_k = 0;
@@ -303,12 +315,14 @@ impl<'a> EMState<'a> {
                 }
             }
             best_genotypes.push(best_k);
+            max_posteriors.push(max_p);
         }
 
         GenotypeResult {
             locus_id,
             genotype_probs: self.posteriors,
             best_genotypes,
+            max_posteriors,
             bias: self.bias,
             seq_error: self.seq_error,
             overdispersion: self.rho,
@@ -419,6 +433,10 @@ pub(crate) fn fit_norm_with_mode_and_bounds(
         FitMode::TurboAuto => {
             // TurboAuto: 3-start sprint with parallel E-step
             super::norm_turbo::fit_norm_turbo_auto(ref_counts, total_counts, ploidy)
+        }
+        FitMode::TurboAutoSafe => {
+            // TurboAutoSafe: 3-start sprint with parallel E-step and capping/gamma caching
+            super::norm_turbo::fit_norm_turbo_auto_safe(ref_counts, total_counts, ploidy)
         }
     }
 }

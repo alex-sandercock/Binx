@@ -108,6 +108,7 @@ pub struct GenotypeResult {
     pub locus_id: String,
     pub genotype_probs: Vec<Vec<f64>>, // [Sample][Genotype]
     pub best_genotypes: Vec<usize>,    // [Sample]
+    pub max_posteriors: Vec<f64>,      // [Sample] max posterior prob per sample
     pub bias: f64,
     pub seq_error: f64,
     pub overdispersion: f64,           // Added rho parameter
@@ -422,6 +423,7 @@ fn run_dosage_streaming(
                     best: res.best_genotypes,
                     probs: flat_probs,
                     num_genotypes,
+                    max_posteriors: res.max_posteriors,
                     bias: res.bias,
                     rho: res.overdispersion,
                     mu: res.model_mu,
@@ -838,6 +840,7 @@ fn run_dosage_collected(
                     best: res.best_genotypes,
                     probs: flat_probs,
                     num_genotypes,
+                    max_posteriors: res.max_posteriors,
                     bias: res.bias,
                     rho: res.overdispersion,
                     mu: res.model_mu,

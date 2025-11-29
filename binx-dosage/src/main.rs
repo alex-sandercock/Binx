@@ -20,6 +20,7 @@ fn main() -> anyhow::Result<()> {
         eprintln!("  --mode fast     Single start at bias=1.0 (fastest)");
         eprintln!("  --mode turbo    Parallel E-step, single start (8-10x faster than fast)");
         eprintln!("  --mode turboauto Parallel E-step, 3-start sprint (8-10x faster than auto)");
+        eprintln!("  --mode turboauto-safe Parallel E-step, 3-start sprint with depth capping");
         eprintln!("  --format matrix | stats | beagle | vcf | plink | gwaspoly (default: matrix)");
         eprintln!("  --compress none | gzip (default: none)");
         eprintln!("  --chunk-size N  Process VCF records in batches of N (default: 256; set 0 to stream one by one)");
@@ -88,8 +89,9 @@ fn main() -> anyhow::Result<()> {
                     "updog-exact" => FitMode::UpdogExact,
                     "turbo" => FitMode::Turbo,
                     "turboauto" => FitMode::TurboAuto,
+                    "turboauto-safe" => FitMode::TurboAutoSafe,
                     _ => {
-                        eprintln!("Invalid mode: {}. Use 'auto', 'updog', 'updog-fast', 'updog-exact', 'fast', 'turbo', or 'turboauto'", mode_str);
+                        eprintln!("Invalid mode: {}. Use 'auto', 'updog', 'updog-fast', 'updog-exact', 'fast', 'turbo', 'turboauto', or 'turboauto-safe'", mode_str);
                         std::process::exit(1);
                     }
                 };

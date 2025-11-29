@@ -22,6 +22,7 @@ pub struct LocusOutput {
     /// Access pattern: probs[sample * num_genotypes + genotype]
     pub probs: Vec<f64>,
     pub num_genotypes: usize,
+    pub max_posteriors: Vec<f64>,
     pub bias: f64,
     pub rho: f64,
     pub mu: f64,

@@ -14,9 +14,7 @@ use argmin::solver::quasinewton::LBFGS;
 use ndarray::Array1;
 use rayon::prelude::*;
 use statrs::function::gamma::ln_gamma;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use thread_local::ThreadLocal;
+use std::sync::OnceLock;
 
 // Constants (same as norm.rs)
 const MAX_ITER: usize = 200;
@@ -33,23 +31,29 @@ const NEG_INF_FALLBACK: f64 = -1.0e30;
 const LN_2PI: f64 = 1.8378770664093453;
 const LBFGS_MAX_ITERS: u64 = 20;
 
-/// Thread-local gamma cache for fast ln_gamma lookups
-/// Each thread maintains its own HashMap to avoid synchronization overhead
-static GAMMA_CACHE: ThreadLocal<RefCell<HashMap<u64, f64>>> = ThreadLocal::new();
+/// Global ln_gamma table for integer arguments (0..=MAX_LG)
+static LN_GAMMA_TABLE: OnceLock<Vec<f64>> = OnceLock::new();
+const MAX_LG: usize = 5000;
 
 /// Cached version of ln_gamma that uses thread-local storage
 #[inline]
 fn ln_gamma_cached(x: f64) -> f64 {
-    // For small integer values, use cache
-    if x >= 1.0 && x <= 10000.0 && x.fract() == 0.0 {
-        let key = x as u64;
-        let cache = GAMMA_CACHE.get_or(|| RefCell::new(HashMap::new()));
-        let mut cache = cache.borrow_mut();
-        *cache.entry(key).or_insert_with(|| ln_gamma(x))
-    } else {
-        // For non-integer or large values, compute directly
-        ln_gamma(x)
+    // Fast path: integer arguments via global table
+    if x >= 0.0 && x.fract() == 0.0 {
+        let idx = x as usize;
+        if idx <= MAX_LG {
+            let table = LN_GAMMA_TABLE.get_or_init(|| {
+                let mut t = Vec::with_capacity(MAX_LG + 1);
+                for i in 0..=MAX_LG {
+                    t.push(ln_gamma(i as f64));
+                }
+                t
+            });
+            return table[idx];
+        }
     }
+    // Fallback for non-integer or > MAX_LG
+    ln_gamma(x)
 }
 
 /// Cached version of log_beta_binomial_pdf using ln_gamma_cached
@@ -184,13 +188,19 @@ impl<'a> EMStateTurbo<'a> {
     /// PARALLEL E-step: Calculate posteriors across samples in parallel
     pub fn em_step(&mut self) {
         let prior_probs = discretized_normal_probs(self.mu, self.sigma, self.ploidy);
+        let cap = depth_cap(self.ploidy);
 
         // Parallel E-step: compute posteriors and log-likelihoods for all samples
         let results: Vec<(Vec<f64>, f64)> = (0..self.ref_counts.len())
             .into_par_iter()
             .map(|i| {
-                let r = self.ref_counts[i];
-                let n = self.total_counts[i];
+                let (r, n) = cap_counts(self.ref_counts[i], self.total_counts[i], cap);
+
+                if n == 0 {
+                    // No information: posterior equals prior
+                    return (prior_probs.clone(), 0.0);
+                }
+
                 let mut joint_log_probs = Vec::with_capacity(self.ploidy + 1);
 
                 for k in 0..=self.ploidy {
@@ -237,8 +247,8 @@ impl<'a> EMStateTurbo<'a> {
         self.mu = new_mu;
         self.sigma = new_sigma;
 
-        // Update bias, rho, seq_error using GSS (reduced to 2 iterations for speed)
-        for _sub_iter in 0..2 {
+        // Update bias, rho, seq_error using GSS (3 iterations to mirror non-turbo paths)
+        for _sub_iter in 0..3 {
             self.bias = optimize_param_gss(
                 self.bias,
                 self.bounds.bias_min,
@@ -303,6 +313,7 @@ impl<'a> EMStateTurbo<'a> {
     pub fn into_result(self, locus_id: String) -> GenotypeResult {
         let n_samples = self.ref_counts.len();
         let mut best_genotypes = Vec::with_capacity(n_samples);
+        let mut max_posteriors = Vec::with_capacity(n_samples);
 
         for i in 0..n_samples {
             let mut best_k = 0;
@@ -314,12 +325,14 @@ impl<'a> EMStateTurbo<'a> {
                 }
             }
             best_genotypes.push(best_k);
+            max_posteriors.push(max_p);
         }
 
         GenotypeResult {
             locus_id,
             genotype_probs: self.posteriors,
             best_genotypes,
+            max_posteriors,
             bias: self.bias,
             seq_error: self.seq_error,
             overdispersion: self.rho,
@@ -348,6 +361,22 @@ pub fn fit_norm_turbo(
 
 /// TurboAuto mode: Hybrid sprint with 3 starts, parallel E-step
 pub fn fit_norm_turbo_auto(
+    ref_counts: &Array1<u32>,
+    total_counts: &Array1<u32>,
+    ploidy: usize,
+) -> anyhow::Result<GenotypeResult> {
+    fit_norm_hybrid_sprint_turbo(
+        ref_counts,
+        total_counts,
+        ploidy,
+        vec![0.5, 1.0, 2.0],
+        Bounds::default(),
+        TOLERANCE,
+    )
+}
+
+/// TurboAutoSafe: Hybrid sprint with 3 starts, parallel E-step, capping + gamma caching
+pub fn fit_norm_turbo_auto_safe(
     ref_counts: &Array1<u32>,
     total_counts: &Array1<u32>,
     ploidy: usize,
@@ -453,20 +482,26 @@ fn q_func(
         return NEG_INF_FALLBACK;
     }
 
-    let mut q = 0.0;
-    for i in 0..ref_counts.len() {
-        let r = ref_counts[i];
-        let n = total_counts[i];
-        for k in 0..=ploidy {
-            let w = posteriors[i][k];
-            if w < 1e-12 { continue; }
+    let cap = depth_cap(ploidy);
 
-            let p_xi = prob_ref_read(k, ploidy, seq_error, bias);
-            let log_lik = log_beta_binomial_pdf_cached(r, n, p_xi, rho);
-
-            q += w * log_lik;
-        }
-    }
+    // Parallelize across samples to keep high-depth loci responsive and capped
+    let q: f64 = (0..ref_counts.len())
+        .into_par_iter()
+        .map(|i| {
+            let (r, n) = cap_counts(ref_counts[i], total_counts[i], cap);
+            let mut acc = 0.0;
+            for k in 0..=ploidy {
+                let w = posteriors[i][k];
+                if w < 1e-12 {
+                    continue;
+                }
+                let p_xi = prob_ref_read(k, ploidy, seq_error, bias);
+                let log_lik = log_beta_binomial_pdf_cached(r, n, p_xi, rho);
+                acc += w * log_lik;
+            }
+            acc
+        })
+        .sum();
     q + prior_penalty(bias, seq_error, rho)
 }
 
@@ -662,4 +697,21 @@ fn is_valid_prob(x: f64) -> bool {
 
 fn logit(x: f64) -> f64 {
     (x / (1.0 - x)).ln()
+}
+
+#[inline]
+fn depth_cap(ploidy: usize) -> u32 {
+    // Scale cap by ploidy to preserve discrimination between adjacent dosages
+    (25 * ploidy as u32).max(25)
+}
+
+#[inline]
+fn cap_counts(r: u32, n: u32, cap: u32) -> (u32, u32) {
+    if n <= cap {
+        return (r, n);
+    }
+    let cap_f = cap as f64;
+    let n_f = n as f64;
+    let scaled_r = ((r as f64) * (cap_f / n_f)).round() as u32;
+    (scaled_r.min(cap), cap)
 }
