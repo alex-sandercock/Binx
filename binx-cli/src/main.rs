@@ -15,57 +15,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Biallelic GWASpoly-style GWAS (supports LM and LMM; use --kinship for LMM)
-    Gwas {
-        /// Genotype dosage file (biallelic; markers x samples)
-        #[arg(long)]
-        geno: String,
-
-        /// Phenotype file (sample_id + traits)
-        #[arg(long)]
-        pheno: String,
-
-        /// Trait name to analyze
-        #[arg(long)]
-        trait_name: String,
-
-        /// Comma-separated covariate names from phenotype file
-        #[arg(long)]
-        covariates: Option<String>,
-
-        /// Optional TSV with PCs (sample_id + PC1..PCn)
-        #[arg(long)]
-        pcs: Option<String>,
-
-        /// Optional kinship matrix TSV (sample_id + samples)
-        #[arg(long)]
-        kinship: Option<String>,
-
-        /// Allow dropping genotype samples that lack phenotypes
-        #[arg(long, default_value_t = false)]
-        allow_missing_samples: bool,
-
-        /// Optional environment column name to filter phenotype rows (e.g., env)
-        #[arg(long)]
-        env_column: Option<String>,
-
-        /// Environment value to keep (used with --env-column)
-        #[arg(long)]
-        env_value: Option<String>,
-
-        /// Ploidy (e.g., 2, 4, 6)
-        #[arg(long)]
-        ploidy: u8,
-
-        /// Gene action model (additive, general, etc.)
-        #[arg(long, default_value = "additive")]
-        model: String,
-
-        /// Output results TSV
-        #[arg(long)]
-        out: String,
-    },
-
     /// Multiallelic GWAS (stub for now)
     Multigwas {
         #[arg(long)]
@@ -226,36 +175,6 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Gwas {
-        geno,
-        pheno,
-        trait_name,
-        covariates,
-        pcs,
-        kinship,
-        allow_missing_samples,
-        env_column,
-        env_value,
-        ploidy,
-        model,
-        out,
-    } => {
-        let covariate_list = covariates.as_deref().map(parse_csv_list);
-        binx_gwas::run_gwas(
-            &geno,
-            &pheno,
-            &trait_name,
-            covariate_list.as_deref(),
-            pcs.as_deref(),
-            kinship.as_deref(),
-            allow_missing_samples,
-            env_column.as_deref(),
-            env_value.as_deref(),
-            ploidy,
-            &model,
-            &out,
-        )?;
-    }
         Commands::Multigwas {
             geno,
             pheno,
