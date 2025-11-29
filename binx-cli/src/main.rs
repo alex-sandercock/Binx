@@ -1,5 +1,9 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use std::cell::RefCell;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::time::Instant;
 
 /// binx: a Rust-based genomic analysis toolkit
 #[derive(Parser)]
@@ -169,6 +173,21 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         verbose: bool,
     },
+
+    /// Convert VCF (with AD field) to Binx two-line CSV format
+    Convert {
+        /// Input VCF file (plain or gzipped)
+        #[arg(long)]
+        vcf: String,
+
+        /// Output CSV path (two-line format: ref counts then total counts per locus)
+        #[arg(long)]
+        output: String,
+
+        /// Enable verbose progress output
+        #[arg(long, default_value_t = false)]
+        verbose: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -335,6 +354,9 @@ fn main() -> Result<()> {
                 compress_mode,
             )?;
         }
+        Commands::Convert { vcf, output, verbose } => {
+            convert_vcf_to_csv(&vcf, &output, verbose)?;
+        }
     }
 
     Ok(())
@@ -346,4 +368,100 @@ fn parse_csv_list(s: &str) -> Vec<String> {
         .filter(|v| !v.is_empty())
         .map(|v| v.to_string())
         .collect()
+}
+
+fn convert_vcf_to_csv(vcf_path: &str, output_path: &str, verbose: bool) -> Result<()> {
+    use binx_dosage::io::{stream_vcf_records, VcfRecordCounts};
+
+    let writer = RefCell::new(BufWriter::with_capacity(64 * 1024, File::create(output_path)?));
+    let header_written = RefCell::new(false);
+    let write_error = RefCell::new(None::<anyhow::Error>);
+    let processed = RefCell::new(0usize);
+    let last_report = RefCell::new(Instant::now());
+
+    stream_vcf_records(
+        vcf_path,
+        |names| {
+            let mut w = writer.borrow_mut();
+            let header = std::iter::once("locus".to_string())
+                .chain(names.iter().cloned())
+                .collect::<Vec<_>>()
+                .join(",");
+            if let Err(e) = writeln!(w, "{}", header) {
+                *write_error.borrow_mut() = Some(anyhow::anyhow!(e));
+            } else {
+                *header_written.borrow_mut() = true;
+            }
+        },
+        |rec: VcfRecordCounts| {
+            if write_error.borrow().is_some() {
+                return;
+            }
+            if !*header_written.borrow() {
+                *write_error.borrow_mut() =
+                    Some(anyhow::anyhow!("VCF header with sample names was not found"));
+                return;
+            }
+
+            let mut w = writer.borrow_mut();
+            // Ref line
+            if let Err(e) = write!(w, "{}", rec.id) {
+                *write_error.borrow_mut() = Some(anyhow::anyhow!(e));
+                return;
+            }
+            for &c in rec.ref_counts.iter() {
+                if let Err(e) = write!(w, ",{}", c) {
+                    *write_error.borrow_mut() = Some(anyhow::anyhow!(e));
+                    return;
+                }
+            }
+            if let Err(e) = writeln!(w) {
+                *write_error.borrow_mut() = Some(anyhow::anyhow!(e));
+                return;
+            }
+
+            // Total line
+            if let Err(e) = write!(w, "{}", rec.id) {
+                *write_error.borrow_mut() = Some(anyhow::anyhow!(e));
+                return;
+            }
+            for &c in rec.total_counts.iter() {
+                if let Err(e) = write!(w, ",{}", c) {
+                    *write_error.borrow_mut() = Some(anyhow::anyhow!(e));
+                    return;
+                }
+            }
+            if let Err(e) = writeln!(w) {
+                *write_error.borrow_mut() = Some(anyhow::anyhow!(e));
+                return;
+            }
+
+            if verbose && last_report.borrow().elapsed().as_secs_f64() >= 2.0 {
+                let mut lr = last_report.borrow_mut();
+                *lr = Instant::now();
+                let count = {
+                    let mut p = processed.borrow_mut();
+                    *p += 1;
+                    *p
+                };
+                eprint!("\rConverted {} loci...", count);
+                let _ = std::io::stderr().flush();
+            } else {
+                let mut p = processed.borrow_mut();
+                *p += 1;
+            }
+        },
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to read VCF: {}", e))?;
+
+    if let Some(e) = write_error.into_inner() {
+        return Err(e);
+    }
+
+    writer.into_inner().flush()?;
+    if verbose {
+        let count = processed.into_inner();
+        eprintln!("\nWrote {} loci to {}", count, output_path);
+    }
+    Ok(())
 }
