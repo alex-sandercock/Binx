@@ -22,7 +22,18 @@ pub fn compute_kinship_vanraden(geno: &GenotypeMatrixBiallelic) -> Result<Kinshi
     let mut freqs = Vec::with_capacity(n_markers);
     for i in 0..n_markers {
         let row = geno.dosages.index_axis(Axis(0), i);
-        let mean = row.sum() / (n_samples as f64);
+        let mut sum = 0.0;
+        let mut count = 0usize;
+        for &v in row.iter() {
+            if v.is_finite() {
+                sum += v;
+                count += 1;
+            }
+        }
+        if count == 0 {
+            return Err(anyhow!("Marker {} has all missing dosages", i));
+        }
+        let mean = sum / (count as f64);
         freqs.push(mean / (geno.ploidy as f64));
     }
 
@@ -32,7 +43,12 @@ pub fn compute_kinship_vanraden(geno: &GenotypeMatrixBiallelic) -> Result<Kinshi
         let p = freqs[i];
         let offset = (geno.ploidy as f64) * p;
         for j in 0..n_samples {
-            centered[(i, j)] = geno.dosages[(i, j)] - offset;
+            let val = geno.dosages[(i, j)];
+            centered[(i, j)] = if val.is_finite() {
+                val - offset
+            } else {
+                0.0
+            };
         }
     }
 
@@ -93,6 +109,7 @@ mod tests {
             ploidy: 2,
             sample_ids: vec!["S1".into(), "S2".into()],
             marker_ids: vec!["m1".into(), "m2".into()],
+            marker_metadata: None,
             dosages: array![[0.0, 2.0], [1.0, 1.0]],
         };
         let kin = compute_kinship_vanraden(&geno).unwrap();

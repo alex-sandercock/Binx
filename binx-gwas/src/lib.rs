@@ -7,22 +7,26 @@ use binx_core::{
 use binx_kinship::compute_kinship_vanraden;
 use ndarray::{Array1, Array2, Axis};
 use nalgebra::{DMatrix, DVector};
-use statrs::distribution::{ContinuousCDF, FisherSnedecor, StudentsT};
+use statrs::distribution::{ContinuousCDF, FisherSnedecor};
 use std::collections::{HashMap, HashSet};
 
 /// Gene action models (Phase 2: only additive is implemented).
 #[derive(Debug, Clone, Copy)]
 pub enum GeneActionModel {
     Additive,
-    // General, SimplexDomAlt, etc. to be added later.
+    General,
+    // SimplexDomAlt, etc. to be added later.
 }
 
 pub struct MarkerResult {
     pub marker_id: String,
-    pub beta: f64,
-    pub se: f64,
-    pub t_stat: f64,
+    pub model: String,
+    pub chrom: Option<String>,
+    pub pos: Option<f64>,
+    pub score: f64,
     pub p_value: f64,
+    pub effect: Option<f64>,
+    pub n_obs: usize,
 }
 
 /// Top-level entry point used by the CLI.
@@ -42,6 +46,7 @@ pub fn run_gwas(
     out_path: &str,
 ) -> Result<()> {
     let model = parse_model(model_str)?;
+    let model_name = model_str.to_lowercase();
 
     // Load genotype and phenotype data.
     let geno = load_genotypes_biallelic_from_tsv(geno_path, ploidy)?;
@@ -59,18 +64,6 @@ pub fn run_gwas(
                 unique_pheno_ids.push(id.clone());
             }
         }
-        let geno_set: HashSet<&str> = geno.sample_ids.iter().map(|s| s.as_str()).collect();
-        let missing: Vec<String> = unique_pheno_ids
-            .iter()
-            .filter(|id| !geno_set.contains(id.as_str()))
-            .cloned()
-            .collect();
-        if !missing.is_empty() && !allow_missing_samples {
-            return Err(anyhow!(
-                "Missing genotype rows for sample_ids: {}",
-                missing.join(", ")
-            ));
-        }
         let pheno_set: HashSet<&str> = unique_pheno_ids.iter().map(|s| s.as_str()).collect();
         let keep_indices: Vec<usize> = geno
             .sample_ids
@@ -80,29 +73,53 @@ pub fn run_gwas(
             .collect();
         let geno_subset = subset_genotypes(&geno, &keep_indices)?;
 
-        let (geno_obs, obs_to_geno) = expand_genotypes_for_observations(
-            &geno_subset,
-            &pheno.sample_ids,
-            allow_missing_samples,
-        )?;
-        let y = pheno
-            .traits
-            .get(trait_name)
-            .ok_or_else(|| anyhow!("Trait '{}' not found in phenotype file", trait_name))?
-            .clone();
-        if y.len() != geno_obs.sample_ids.len() {
+        // Keep only phenotype observations with matching genotypes (unless disallowed).
+        let geno_index_map: HashMap<&str, usize> = geno_subset
+            .sample_ids
+            .iter()
+            .enumerate()
+            .map(|(i, sid)| (sid.as_str(), i))
+            .collect();
+        let mut obs_keep = Vec::new();
+        let mut obs_to_geno = Vec::new();
+        let mut missing_obs = Vec::new();
+        for (obs_idx, sid) in pheno.sample_ids.iter().enumerate() {
+            if let Some(g_idx) = geno_index_map.get(sid.as_str()) {
+                obs_keep.push(obs_idx);
+                obs_to_geno.push(*g_idx);
+            } else {
+                missing_obs.push(sid.clone());
+            }
+        }
+        if !missing_obs.is_empty() && !allow_missing_samples {
             return Err(anyhow!(
-                "Trait length {} does not match observations {}",
-                y.len(),
-                geno_obs.sample_ids.len()
+                "Missing genotype rows for sample_ids: {}",
+                missing_obs.join(", ")
             ));
         }
+        if obs_keep.is_empty() {
+            return Err(anyhow!(
+                "No overlapping sample_ids between genotype and phenotype files"
+            ));
+        }
+
+        let obs_sample_ids: Vec<String> = obs_keep
+            .iter()
+            .map(|&i| pheno.sample_ids[i].clone())
+            .collect();
+
+        let geno_obs = expand_genotypes_for_observations(&geno_subset, &obs_to_geno, &obs_sample_ids)?;
+        let y_full = pheno
+            .traits
+            .get(trait_name)
+            .ok_or_else(|| anyhow!("Trait '{}' not found in phenotype file", trait_name))?;
+        let y = align_vector(y_full, &obs_keep);
         let base_design = build_base_design(
             &pheno,
             covariate_names,
             pcs_path,
             &geno_obs.sample_ids,
-            None,
+            Some(&obs_keep),
         )?;
 
         // Kinship: expand to observation-level if provided, otherwise compute from genotypes.
@@ -123,11 +140,21 @@ pub fn run_gwas(
             let x0_array = base_design_to_array2(&base_design)?;
             let cache =
                 fit_null_mixed_model(&y, &x0_array, &kin, Some(&z_mat), Some(&geno_obs.sample_ids))?;
-            let results =
-                run_lmm_score_gwas(&geno_obs, Some(&geno_subset), &y, &base_design, &cache, model)?;
-            write_results_tsv(out_path, &results)?;
-        } else {
-            let results = run_lm_gwas(&geno_obs, &y, &base_design, model)?;
+            let n_genotypes = geno_subset.sample_ids.len();
+            let max_geno_freq_default =
+                (1.0 - 5.0 / (n_genotypes as f64)).clamp(0.01, 0.99);
+            let min_maf_default = 0.0;
+            let results = run_lmm_score_gwas(
+                &geno_obs,
+                &y,
+                &base_design,
+                &cache,
+                model,
+                min_maf_default,
+                max_geno_freq_default,
+                n_genotypes,
+                &model_name,
+            )?;
             write_results_tsv(out_path, &results)?;
         }
     } else {
@@ -152,18 +179,30 @@ pub fn run_gwas(
             Some(&pheno_idx),
         )?;
 
-        if let Some(k_path) = kinship_path {
+        let kin_aligned = if let Some(k_path) = kinship_path {
             let kin = load_kinship(k_path)?;
-            let kin_aligned = align_kinship_to_genotypes(kin, &geno.sample_ids)?;
-            let x0_array = base_design_to_array2(&base_design)?;
-            let cache = fit_null_mixed_model(&y, &x0_array, &kin_aligned, None, None)?;
-            let results = run_lmm_score_gwas(&geno, None, &y, &base_design, &cache, model)?;
-            write_results_tsv(out_path, &results)?;
+            align_kinship_to_genotypes(kin, &geno.sample_ids)?
         } else {
-            // Run LM-based GWAS.
-            let results = run_lm_gwas(&geno, &y, &base_design, model)?;
-            write_results_tsv(out_path, &results)?;
-        }
+            compute_kinship_vanraden(&geno)?
+        };
+        let x0_array = base_design_to_array2(&base_design)?;
+        let cache = fit_null_mixed_model(&y, &x0_array, &kin_aligned, None, None)?;
+        let n_genotypes = geno.sample_ids.len();
+        let max_geno_freq_default =
+            (1.0 - 5.0 / (n_genotypes as f64)).clamp(0.01, 0.99);
+        let min_maf_default = 0.0;
+        let results = run_lmm_score_gwas(
+            &geno,
+            &y,
+            &base_design,
+            &cache,
+            model,
+            min_maf_default,
+            max_geno_freq_default,
+            n_genotypes,
+            &model_name,
+        )?;
+        write_results_tsv(out_path, &results)?;
     }
 
     Ok(())
@@ -172,6 +211,7 @@ pub fn run_gwas(
 fn parse_model(model_str: &str) -> Result<GeneActionModel> {
     match model_str.to_lowercase().as_str() {
         "additive" => Ok(GeneActionModel::Additive),
+        "general" => Ok(GeneActionModel::General),
         other => Err(anyhow!("Unsupported model for Phase 2: {}", other)),
     }
 }
@@ -256,34 +296,16 @@ fn has_duplicate_ids(ids: &[String]) -> bool {
 }
 
 /// Expand genotypes to observation-level (allowing repeated phenotype IDs).
-/// Returns (observation-level genotype matrix, obs_to_geno index).
 fn expand_genotypes_for_observations(
     geno: &GenotypeMatrixBiallelic,
+    obs_to_geno: &[usize],
     obs_ids: &[String],
-    allow_missing: bool,
-) -> Result<(GenotypeMatrixBiallelic, Vec<usize>)> {
-    let mut map = HashMap::new();
-    for (i, sid) in geno.sample_ids.iter().enumerate() {
-        map.insert(sid, i);
-    }
-    let mut obs_to_geno = Vec::with_capacity(obs_ids.len());
-    let mut missing = Vec::new();
-    for sid in obs_ids {
-        if let Some(idx) = map.get(sid) {
-            obs_to_geno.push(*idx);
-        } else {
-            missing.push(sid.clone());
-        }
-    }
-    if !missing.is_empty() && !allow_missing {
+) -> Result<GenotypeMatrixBiallelic> {
+    if obs_to_geno.len() != obs_ids.len() {
         return Err(anyhow!(
-            "Missing genotype rows for sample_ids: {}",
-            missing.join(", ")
-        ));
-    }
-    if obs_to_geno.is_empty() {
-        return Err(anyhow!(
-            "No overlapping sample_ids between genotype and phenotype files"
+            "obs_to_geno length {} does not match obs_ids length {}",
+            obs_to_geno.len(),
+            obs_ids.len()
         ));
     }
 
@@ -299,10 +321,11 @@ fn expand_genotypes_for_observations(
         ploidy: geno.ploidy,
         sample_ids: obs_ids.to_vec(),
         marker_ids: geno.marker_ids.clone(),
+        marker_metadata: geno.marker_metadata.clone(),
         dosages,
     };
 
-    Ok((obs_geno, obs_to_geno))
+    Ok(obs_geno)
 }
 
 fn expand_kinship_for_observations(
@@ -342,6 +365,7 @@ fn subset_genotypes(
         ploidy: geno.ploidy,
         sample_ids,
         marker_ids: geno.marker_ids.clone(),
+        marker_metadata: geno.marker_metadata.clone(),
         dosages,
     })
 }
@@ -410,9 +434,12 @@ fn build_base_design(
                     n_samples
                 ));
             }
-            let mut levels: Vec<String> = values.iter().cloned().collect();
-            levels.sort();
-            levels.dedup();
+            let mut levels: Vec<String> = Vec::new();
+            for v in values.iter() {
+                if !levels.contains(v) {
+                    levels.push(v.clone());
+                }
+            }
                 if levels.len() > 1 {
                     for level in levels.iter().skip(1) {
                         let mut col = Vec::with_capacity(n_samples);
@@ -434,7 +461,9 @@ fn build_base_design(
     // PCs
     if let Some(pcs_path) = pcs_path {
         let pcs = load_pcs_from_tsv(pcs_path)?;
-        if pheno_to_geno.is_some() {
+        let needs_duplicate_friendly =
+            pheno_to_geno.is_none() || has_duplicate_ids(geno_sample_ids);
+        if !needs_duplicate_friendly {
             let pc_cols = align_pcs_to_genotypes(&pcs, geno_sample_ids)?;
             cols.extend(pc_cols);
         } else {
@@ -519,8 +548,31 @@ fn run_lm_gwas(
     base_design_cols: &[Vec<f64>],
     model: GeneActionModel,
 ) -> Result<Vec<MarkerResult>> {
+    run_lm_gwas_with_qc(
+        geno,
+        y,
+        base_design_cols,
+        model,
+        0.0,
+        (1.0 - 5.0 / (geno.sample_ids.len().max(1) as f64)).clamp(0.01, 0.99),
+        geno.sample_ids.len(),
+        &format!("{:?}", model).to_lowercase(),
+    )
+}
+
+fn run_lm_gwas_with_qc(
+    geno: &GenotypeMatrixBiallelic,
+    y: &Array1<f64>,
+    base_design_cols: &[Vec<f64>],
+    model: GeneActionModel,
+    min_maf: f64,
+    max_geno_freq: f64,
+    n_genotypes_for_qc: usize,
+    model_name: &str,
+) -> Result<Vec<MarkerResult>> {
     let n_samples = geno.sample_ids.len();
     let n_markers = geno.marker_ids.len();
+    let p0 = base_design_cols.len();
 
     assert_eq!(y.len(), n_samples);
 
@@ -529,7 +581,6 @@ fn run_lm_gwas(
     })?;
     let y_vec = DVector::from_row_slice(y_slice);
 
-    // Validate base design columns length
     for (i, col) in base_design_cols.iter().enumerate() {
         if col.len() != n_samples {
             return Err(anyhow!(
@@ -544,18 +595,30 @@ fn run_lm_gwas(
     let mut results = Vec::with_capacity(n_markers);
 
     for (marker_idx, marker_id) in geno.marker_ids.iter().enumerate() {
-        // Extract dosage vector for this marker (length n_samples).
         let dosage = geno.dosages.index_axis(Axis(0), marker_idx).to_owned();
-        let x_marker = encode_marker(&dosage, geno.ploidy, model)?;
+        let marker_design = match design_score(
+            &dosage,
+            geno.ploidy,
+            model,
+            min_maf,
+            max_geno_freq,
+            n_genotypes_for_qc,
+        ) {
+            Some(cols) => cols,
+            None => continue,
+        };
+        let p_marker = marker_design.len();
 
         // Build design matrix X = [base_design_cols | marker].
-        let p = base_design_cols.len() + 1;
+        let p = base_design_cols.len() + p_marker;
         let mut data = Vec::with_capacity(n_samples * p);
         for row in 0..n_samples {
             for col in base_design_cols {
                 data.push(col[row]);
             }
-            data.push(x_marker[row]);
+            for col in &marker_design {
+                data.push(col[row]);
+            }
         }
         let x = DMatrix::from_row_slice(n_samples, p, &data);
 
@@ -583,158 +646,164 @@ fn run_lm_gwas(
         }
         let sigma2 = resid.dot(&resid) / df;
 
-        // Var(beta) = sigma2 * (X^T X)^(-1)
-        let se_marker = (sigma2 * xtx_inv[(p - 1, p - 1)]).sqrt();
-        let beta_marker = beta[p - 1];
-        let (t_stat, p_value) = if se_marker == 0.0 {
-            (0.0, 1.0)
-        } else {
-            let t = beta_marker / se_marker;
-            let dist = StudentsT::new(0.0, 1.0, df)?;
-            let p = 2.0 * (1.0 - dist.cdf(t.abs()));
-            (t, p)
+        let marker_beta = beta.rows(p0, p_marker).into_owned();
+        let w_marker = xtx_inv
+            .slice((p - p_marker, p - p_marker), (p_marker, p_marker))
+            .into_owned();
+        let inv_w_marker = match w_marker.clone().try_inverse() {
+            Some(m) => m,
+            None => {
+                let mut jittered = w_marker.clone();
+                for i in 0..p_marker {
+                    jittered[(i, i)] += 1e-8;
+                }
+                jittered.try_inverse().unwrap_or_else(|| DMatrix::zeros(p_marker, p_marker))
+            }
         };
+        let denom = sigma2 * (p_marker as f64);
+        let f_stat = if denom > 0.0 {
+            let beta_copy = marker_beta.clone();
+            (beta_copy.transpose() * inv_w_marker * beta_copy)[(0, 0)] / denom
+        } else {
+            0.0
+        };
+        let p_value = if f_stat.is_finite() {
+            let f_dist = FisherSnedecor::new(p_marker as f64, df)?;
+            (1.0 - f_dist.cdf(f_stat)).max(0.0)
+        } else {
+            1.0
+        };
+        let p_clamped = p_value.max(f64::MIN_POSITIVE);
+        let score = -p_clamped.log10();
+        let effect = match model {
+            GeneActionModel::Additive => Some(marker_beta[0]),
+            GeneActionModel::General => None,
+        };
+        let (chrom, pos) = geno
+            .marker_metadata
+            .as_ref()
+            .and_then(|meta| meta.get(marker_idx))
+            .map(|m| (Some(m.chrom.clone()), Some(m.pos)))
+            .unwrap_or((None, None));
 
         results.push(MarkerResult {
             marker_id: marker_id.clone(),
-            beta: beta_marker,
-            se: se_marker,
-            t_stat,
+            model: model_name.to_string(),
+            chrom,
+            pos,
+            score,
             p_value,
+            effect,
+            n_obs: n_samples,
         });
     }
 
     Ok(results)
 }
 
-/// LMM GWAS using pre-fit null model cache.
-fn run_lmm_gwas(
-    geno: &GenotypeMatrixBiallelic,
-    cache: &MixedModelCache,
+/// Marker design and QC mirroring GWASpoly's .design.score.
+fn design_score(
+    dosage: &Array1<f64>,
+    ploidy: u8,
     model: GeneActionModel,
-) -> Result<Vec<MarkerResult>> {
-    let n_samples = geno.sample_ids.len();
-    let n_markers = geno.marker_ids.len();
-    let p0 = cache.x0_star.ncols();
-
-    if cache.sample_ids != geno.sample_ids {
-        return Err(anyhow!(
-            "Kinship sample IDs do not match genotype order after alignment"
-        ));
+    min_maf: f64,
+    max_geno_freq: f64,
+    n_genotypes_for_qc: usize,
+) -> Option<Vec<Vec<f64>>> {
+    if n_genotypes_for_qc == 0 {
+        return None;
     }
-
-    let mut results = Vec::with_capacity(n_markers);
-
-    for (marker_idx, marker_id) in geno.marker_ids.iter().enumerate() {
-        let dosage = geno.dosages.index_axis(Axis(0), marker_idx).to_owned();
-        let x_marker = encode_marker(&dosage, geno.ploidy, model)?;
-
-        // Transform marker: x* = D^-1/2 U^T x
-        let x_vec = DVector::from_row_slice(&x_marker);
-        let x_t = cache.u.transpose() * x_vec;
-        let mut x_star_vec = x_t.clone();
-        for (xi, s) in x_star_vec.iter_mut().zip(cache.d_inv_sqrt.iter()) {
-            *xi *= *s;
+    let mut valid_sum = 0.0;
+    let mut valid_n = 0usize;
+    for &v in dosage.iter() {
+        if v.is_finite() {
+            valid_sum += v;
+            valid_n += 1;
         }
-
-        // Build design matrix X* = [X0* | x*]
-        let p = p0 + 1;
-        let mut data = Vec::with_capacity(n_samples * p);
-        for row in 0..n_samples {
-            for col in 0..p0 {
-                data.push(cache.x0_star[(row, col)]);
-            }
-            data.push(x_star_vec[row]);
-        }
-        let x = DMatrix::from_row_slice(n_samples, p, &data);
-
-        let xtx = &x.transpose() * &x;
-        let xty = &x.transpose() * &cache.y_star;
-        let lu = xtx.lu();
-        let beta = match lu.solve(&xty) {
-            Some(b) => b,
-            None => {
-                return Err(anyhow!("Singular design matrix (LMM) for marker {}", marker_id));
-            }
-        };
-        let xtx_inv = match lu.try_inverse() {
-            Some(inv) => inv,
-            None => {
-                return Err(anyhow!("Failed to invert X^T X (LMM) for marker {}", marker_id));
-            }
-        };
-
-        let y_hat = &x * &beta;
-        let resid = &cache.y_star - y_hat;
-        let df = (n_samples as f64) - (p as f64);
-        if df <= 0.0 {
-            return Err(anyhow!(
-                "Degrees of freedom <= 0 in LMM (n_samples={}, p={})",
-                n_samples,
-                p
-            ));
-        }
-        let sigma2 = resid.dot(&resid) / df;
-
-        let se_marker = (sigma2 * xtx_inv[(p - 1, p - 1)]).sqrt();
-        let beta_marker = beta[p - 1];
-        let (t_stat, p_value) = if se_marker == 0.0 {
-            (0.0, 1.0)
-        } else {
-            let t = beta_marker / se_marker;
-            let dist = StudentsT::new(0.0, 1.0, df)?;
-            let p = 2.0 * (1.0 - dist.cdf(t.abs()));
-            (t, p)
-        };
-
-        results.push(MarkerResult {
-            marker_id: marker_id.clone(),
-            beta: beta_marker,
-            se: se_marker,
-            t_stat,
-            p_value,
-        });
     }
-
-    Ok(results)
-}
-
-/// LMM score/F-test using Hinv from MixedModelCache (rrBLUP/GWASpoly-like).
-fn passes_marker_qc(dosage: &Array1<f64>, ploidy: u8, n_geno: usize, min_maf: f64, max_geno_freq: f64) -> bool {
-    if n_geno == 0 {
-        return false;
+    if valid_n == 0 {
+        return None;
     }
-    let mean = dosage.sum() / (dosage.len() as f64);
-    let freq = mean / (ploidy as f64);
+    let freq = (valid_sum / (valid_n as f64)) / (ploidy as f64);
     if freq.min(1.0 - freq) < min_maf {
-        return false;
+        return None;
     }
-    // genotype frequency based on rounded dosage
-    let mut counts: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
-    for &d in dosage.iter() {
-        let r = d.round() as i64;
-        *counts.entry(r).or_insert(0) += 1;
+    match model {
+        GeneActionModel::Additive => {
+            let mut counts: HashMap<i64, usize> = HashMap::new();
+            for &d in dosage.iter() {
+                if d.is_finite() {
+                    let r = d.round() as i64;
+                    *counts.entry(r).or_insert(0) += 1;
+                }
+            }
+            let max_freq = counts
+                .values()
+                .cloned()
+                .max()
+                .unwrap_or(0) as f64
+                / (dosage.len() as f64);
+            if max_freq > max_geno_freq {
+                return None;
+            }
+            Some(vec![dosage.to_vec()])
+        }
+        GeneActionModel::General => {
+            let mut counts: HashMap<i64, usize> = HashMap::new();
+            let mut rounded = Vec::with_capacity(dosage.len());
+            for &d in dosage.iter() {
+                if !d.is_finite() {
+                    return None;
+                }
+                let r = d.round() as i64;
+                rounded.push(r);
+                *counts.entry(r).or_insert(0) += 1;
+            }
+            let max_freq = counts
+                .values()
+                .cloned()
+                .max()
+                .unwrap_or(0) as f64
+                / (dosage.len() as f64);
+            if max_freq > max_geno_freq {
+                return None;
+            }
+            let mut levels: Vec<i64> = Vec::new();
+            for v in &rounded {
+                if !levels.contains(v) {
+                    levels.push(*v);
+                }
+            }
+            if levels.len() <= 1 {
+                return None;
+            }
+            let mut cols = Vec::with_capacity(levels.len().saturating_sub(1));
+            for level in levels.iter().skip(1) {
+                let mut col = Vec::with_capacity(rounded.len());
+                for v in &rounded {
+                    col.push((v == level) as i32 as f64);
+                }
+                cols.push(col);
+            }
+            Some(cols)
+        }
     }
-    let max_freq = counts.values().cloned().max().unwrap_or(0) as f64 / (n_geno as f64);
-    max_freq <= max_geno_freq
 }
 
 fn run_lmm_score_gwas(
     geno: &GenotypeMatrixBiallelic,
-    qc_geno: Option<&GenotypeMatrixBiallelic>,
     y: &Array1<f64>,
     base_design_cols: &[Vec<f64>],
     cache: &MixedModelCache,
     model: GeneActionModel,
+    min_maf: f64,
+    max_geno_freq: f64,
+    n_genotypes_for_qc: usize,
+    model_name: &str,
 ) -> Result<Vec<MarkerResult>> {
     let n_samples = geno.sample_ids.len();
     let n_markers = geno.marker_ids.len();
     let p0 = base_design_cols.len();
-
-    let qc_source = qc_geno.unwrap_or(geno);
-    let n_geno_qc = qc_source.sample_ids.len().max(1);
-    let max_geno_freq_default = 1.0 - 5.0 / (n_geno_qc as f64);
-    let min_maf_default = 0.0;
 
     // Build X0 matrix from base_design_cols.
     let x0 = base_design_to_array2(base_design_cols)?;
@@ -756,31 +825,32 @@ fn run_lmm_score_gwas(
 
     for (marker_idx, marker_id) in geno.marker_ids.iter().enumerate() {
         let dosage = geno.dosages.index_axis(Axis(0), marker_idx).to_owned();
-        let qc_dosage = qc_source
-            .dosages
-            .index_axis(Axis(0), marker_idx)
-            .to_owned();
-        let x_marker = encode_marker(&dosage, geno.ploidy, model)?;
-
-        // QC filters (approximate GWASpoly defaults).
-        if !passes_marker_qc(
-            &qc_dosage,
-            qc_source.ploidy,
-            n_geno_qc,
-            min_maf_default,
-            max_geno_freq_default,
+        let marker_design = match design_score(
+            &dosage,
+            geno.ploidy,
+            model,
+            min_maf,
+            max_geno_freq,
+            n_genotypes_for_qc,
         ) {
+            Some(cols) => cols,
+            None => continue,
+        };
+        let p_marker = marker_design.len();
+        if p_marker == 0 {
             continue;
         }
 
-        // Build design matrix X = [X0 | marker]
-        let p = p0 + 1;
+        // Build design matrix X = [X0 | marker_design]
+        let p = p0 + p_marker;
         let mut data = Vec::with_capacity(n_samples * p);
         for row in 0..n_samples {
             for col in 0..p0 {
                 data.push(x0[(row, col)]);
             }
-            data.push(x_marker[row]);
+            for col in &marker_design {
+                data.push(col[row]);
+            }
         }
         let x = DMatrix::from_row_slice(n_samples, p, &data);
 
@@ -807,44 +877,64 @@ fn run_lmm_score_gwas(
         }
         let s2 = (resid.transpose() * h_inv * resid)[(0, 0)] / v2;
 
-        // For additive v1=1: use last coefficient variance.
-        let se_marker = (s2 * w_inv[(p - 1, p - 1)]).sqrt();
-        let beta_marker = beta[p - 1];
-        let fstat = if se_marker > 0.0 {
-            (beta_marker * beta_marker) / (s2 * w_inv[(p - 1, p - 1)])
+        let marker_beta = beta.rows(p0, p_marker).into_owned();
+        let w_marker = w_inv
+            .slice((p - p_marker, p - p_marker), (p_marker, p_marker))
+            .into_owned();
+        let inv_w_marker = match w_marker.clone().try_inverse() {
+            Some(m) => m,
+            None => {
+                let mut jittered = w_marker.clone();
+                for i in 0..p_marker {
+                    jittered[(i, i)] += 1e-8;
+                }
+                match jittered.try_inverse() {
+                    Some(m) => m,
+                    None => continue,
+                }
+            }
+        };
+
+        let denom = s2 * (p_marker as f64);
+        let fstat = if denom > 0.0 {
+            let beta_copy = marker_beta.clone();
+            (beta_copy.transpose() * inv_w_marker * beta_copy)[(0, 0)] / denom
         } else {
             0.0
         };
-        let v1 = (p - p0) as f64;
         let p_value = if fstat.is_finite() {
-            let f_dist = FisherSnedecor::new(v1, v2)?;
+            let f_dist = FisherSnedecor::new(p_marker as f64, v2)?;
             (1.0 - f_dist.cdf(fstat)).max(0.0)
         } else {
             1.0
         };
+        let p_clamped = p_value.max(f64::MIN_POSITIVE);
+        let score = -p_clamped.log10();
+
+        let effect = match model {
+            GeneActionModel::Additive => Some(marker_beta[0]),
+            GeneActionModel::General => None,
+        };
+        let (chrom, pos) = geno
+            .marker_metadata
+            .as_ref()
+            .and_then(|meta| meta.get(marker_idx))
+            .map(|m| (Some(m.chrom.clone()), Some(m.pos)))
+            .unwrap_or((None, None));
 
         results.push(MarkerResult {
             marker_id: marker_id.clone(),
-            beta: beta_marker,
-            se: se_marker,
-            t_stat: fstat,
+            model: model_name.to_string(),
+            chrom,
+            pos,
+            score,
             p_value,
+            effect,
+            n_obs: n_samples,
         });
     }
 
     Ok(results)
-}
-
-/// Encode marker under a given gene-action model.
-/// Phase 2: additive = single column of dosages.
-fn encode_marker(
-    dosage: &Array1<f64>,
-    _ploidy: u8,
-    model: GeneActionModel,
-) -> Result<Vec<f64>> {
-    match model {
-        GeneActionModel::Additive => Ok(dosage.to_vec()),
-    }
 }
 
 fn write_results_tsv(
@@ -855,14 +945,35 @@ fn write_results_tsv(
         .delimiter(b'\t')
         .from_path(path)?;
 
-    wtr.write_record(&["marker_id", "beta", "se", "t_stat", "p_value"])?;
+    wtr.write_record(&[
+        "marker_id",
+        "chrom",
+        "pos",
+        "model",
+        "score",
+        "p_value",
+        "effect",
+        "n_obs",
+    ])?;
     for r in results {
+        let chrom = r.chrom.as_deref().unwrap_or("");
+        let pos = r
+            .pos
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "".to_string());
+        let effect = r
+            .effect
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "NA".to_string());
         wtr.write_record(&[
             r.marker_id.as_str(),
-            &r.beta.to_string(),
-            &r.se.to_string(),
-            &r.t_stat.to_string(),
+            chrom,
+            &pos,
+            r.model.as_str(),
+            &r.score.to_string(),
             &r.p_value.to_string(),
+            &effect,
+            &r.n_obs.to_string(),
         ])?;
     }
     wtr.flush()?;
@@ -892,6 +1003,7 @@ mod tests {
             ploidy: 2,
             sample_ids: vec!["S3".into(), "S1".into(), "S2".into()],
             marker_ids: vec!["m1".into()],
+            marker_metadata: None,
             dosages: array![[0.0, 1.0, 2.0]],
         };
 
@@ -906,14 +1018,25 @@ mod tests {
             ploidy: 2,
             sample_ids: vec!["S1".into(), "S2".into(), "S3".into()],
             marker_ids: vec!["m1".into()],
+            marker_metadata: None,
             dosages: array![[0.0, 1.0, 2.0]],
         };
         let y = array![1.0, 2.9, 6.1];
         let base = vec![vec![1.0; 3]]; // intercept only
 
-        let results = run_lm_gwas(&geno, &y, &base, GeneActionModel::Additive).unwrap();
+        let results = run_lm_gwas_with_qc(
+            &geno,
+            &y,
+            &base,
+            GeneActionModel::Additive,
+            0.0,
+            1.0,
+            geno.sample_ids.len(),
+            "additive",
+        )
+        .unwrap();
         let r = &results[0];
-        assert!((r.beta - 2.55).abs() < 1e-6);
+        assert!((r.effect.unwrap() - 2.55).abs() < 1e-6);
         assert!(r.p_value < 0.2);
     }
 
@@ -924,15 +1047,26 @@ mod tests {
             ploidy: 2,
             sample_ids: vec!["S1".into(), "S2".into(), "S3".into(), "S4".into()],
             marker_ids: vec!["m1".into()],
+            marker_metadata: None,
             dosages: array![[0.0, 1.0, 1.0, 2.0]],
         };
         let y = array![0.0, 0.0, 10.0, 10.0];
         let cov = vec![0.0, 0.0, 1.0, 1.0];
         let base = vec![vec![1.0; 4], cov];
 
-        let results = run_lm_gwas(&geno, &y, &base, GeneActionModel::Additive).unwrap();
+        let results = run_lm_gwas_with_qc(
+            &geno,
+            &y,
+            &base,
+            GeneActionModel::Additive,
+            0.0,
+            1.0,
+            geno.sample_ids.len(),
+            "additive",
+        )
+        .unwrap();
         let r = &results[0];
-        assert!(r.beta.abs() < 1e-8);
+        assert!(r.effect.unwrap().abs() < 1e-8);
         assert!(r.p_value > 0.9);
     }
 
@@ -942,6 +1076,7 @@ mod tests {
             ploidy: 2,
             sample_ids: vec!["S1".into(), "S2".into(), "S3".into()],
             marker_ids: vec!["m1".into()],
+            marker_metadata: None,
             dosages: array![[0.0, 1.0, 2.0]],
         };
         let y = array![1.0, 2.9, 6.1];
@@ -953,11 +1088,34 @@ mod tests {
         };
         let cache = fit_null_mixed_model(&y, &x0, &kin, None, None).unwrap();
 
-        let lm = run_lm_gwas(&geno, &y, &base_cols, GeneActionModel::Additive).unwrap();
-        let lmm = run_lmm_gwas(&geno, &cache, GeneActionModel::Additive).unwrap();
+        let lm = run_lm_gwas_with_qc(
+            &geno,
+            &y,
+            &base_cols,
+            GeneActionModel::Additive,
+            0.0,
+            1.0,
+            geno.sample_ids.len(),
+            "additive",
+        )
+        .unwrap();
+        let n_genotypes = geno.sample_ids.len();
+        let max_geno_freq = 1.0;
+        let lmm = run_lmm_score_gwas(
+            &geno,
+            &y,
+            &base_cols,
+            &cache,
+            GeneActionModel::Additive,
+            0.0,
+            max_geno_freq,
+            n_genotypes,
+            "additive",
+        )
+        .unwrap();
         let lm_res = &lm[0];
         let lmm_res = &lmm[0];
-        assert!((lm_res.beta - lmm_res.beta).abs() < 1e-6);
-        assert!((lm_res.se - lmm_res.se).abs() < 1e-6);
+        assert!((lm_res.effect.unwrap() - lmm_res.effect.unwrap()).abs() < 1e-6);
+        assert!((lm_res.p_value - lmm_res.p_value).abs() < 1e-6);
     }
 }

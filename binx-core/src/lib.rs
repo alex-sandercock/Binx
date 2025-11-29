@@ -10,6 +10,13 @@ use std::path::Path;
 pub type SampleId = String;
 pub type MarkerId = String;
 
+/// Optional marker metadata (chromosome, position).
+#[derive(Clone)]
+pub struct MarkerMetadata {
+    pub chrom: String,
+    pub pos: f64,
+}
+
 /// Simple phenotype table: samples × (traits + covariates).
 pub struct PhenotypeTable {
     pub sample_ids: Vec<SampleId>,
@@ -23,6 +30,7 @@ pub struct GenotypeMatrixBiallelic {
     pub ploidy: u8,
     pub sample_ids: Vec<SampleId>,
     pub marker_ids: Vec<MarkerId>,
+    pub marker_metadata: Option<Vec<MarkerMetadata>>,
     /// shape: (n_markers, n_samples)
     pub dosages: Array2<f64>,
 }
@@ -443,19 +451,34 @@ pub fn load_genotypes_biallelic_from_tsv<P: AsRef<Path>>(
     let sample_ids: Vec<SampleId> = header_strings.iter().skip(3).cloned().collect();
 
     let mut marker_ids = Vec::new();
+    let mut marker_metadata = Vec::new();
     let mut dosage_rows: Vec<Vec<f64>> = Vec::new();
 
     for result in rdr.records() {
         let record = result?;
         let marker_id = record.get(0).unwrap().to_string();
         marker_ids.push(marker_id);
+        let chrom = record
+            .get(1)
+            .ok_or_else(|| anyhow!("Missing chrom column in genotype file"))?
+            .to_string();
+        let pos_str = record
+            .get(2)
+            .ok_or_else(|| anyhow!("Missing pos column in genotype file"))?;
+        let pos: f64 = pos_str.parse().map_err(|e| {
+            anyhow!("Failed to parse position '{}' at marker {}: {}", pos_str, marker_ids.last().unwrap(), e)
+        })?;
+        marker_metadata.push(MarkerMetadata { chrom, pos });
 
         let mut row = Vec::with_capacity(sample_ids.len());
         for i in 3..record.len() {
             let val_str = record.get(i).unwrap();
-            let val: f64 = val_str.parse().map_err(|e| {
-                anyhow!("Failed to parse dosage '{}' at col {}: {}", val_str, i, e)
-            })?;
+            let val: f64 = match val_str {
+                "NA" | "NaN" | "." => f64::NAN,
+                _ => val_str.parse().map_err(|e| {
+                    anyhow!("Failed to parse dosage '{}' at col {}: {}", val_str, i, e)
+                })?,
+            };
             row.push(val);
         }
         dosage_rows.push(row);
@@ -475,6 +498,7 @@ pub fn load_genotypes_biallelic_from_tsv<P: AsRef<Path>>(
         ploidy,
         sample_ids,
         marker_ids,
+        marker_metadata: Some(marker_metadata),
         dosages,
     })
 }
@@ -600,6 +624,9 @@ mod tests {
         let geno = load_genotypes_biallelic_from_tsv(file.path(), 2).expect("load genotypes");
         assert_eq!(geno.sample_ids, vec!["S1", "S2"]);
         assert_eq!(geno.marker_ids, vec!["m1", "m2"]);
+        let meta = geno.marker_metadata.as_ref().expect("marker metadata");
+        assert_eq!(meta[0].chrom, "1");
+        assert_eq!(meta[0].pos, 10.0);
         assert_eq!(geno.dosages.shape(), &[2, 2]);
         assert_eq!(geno.dosages[[0, 1]], 1.0);
         assert_eq!(geno.dosages[[1, 0]], 2.0);
