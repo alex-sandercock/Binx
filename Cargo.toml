@@ -1,11 +1,13 @@
 [workspace]
 members = [
     "binx-core",
-    "binx-gwas",
     "binx-multigwas",
     "binx-kinship",
     "binx-cli",
     "binx-dosage",
+    "binx-convert",
+    "rrblup-rs",
+    "gwaspoly-rs",
 ]
 
 resolver = "2"

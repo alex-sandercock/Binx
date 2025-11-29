@@ -1,0 +1,25 @@
+[package]
+name = "rrblup-rs"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Rust implementation of R/rrBLUP package for mixed model analysis"
+
+[dependencies]
+binx-core = { path = "../binx-core" }
+binx-kinship = { path = "../binx-kinship" }
+ndarray = "0.15"
+nalgebra = "0.29"
+faer = "0.19"
+statrs = "0.16"
+anyhow = "1"
+csv = "1.4"
+rand = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
+approx = "0.5"
+
+[[bin]]
+name = "benchmark"
+path = "benches/benchmark.rs"
