@@ -1226,6 +1226,7 @@ dependencies = [
  "faer",
  "nalgebra",
  "ndarray",
+ "rand",
  "statrs",
  "tempfile",
 ]

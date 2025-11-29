@@ -11,8 +11,14 @@
 // Module for mixed.solve function
 pub mod mixed_solve;
 
+// Module for A.mat function
+pub mod a_mat;
+
 // Re-export main types and functions from mixed_solve
 pub use mixed_solve::{mixed_solve as mixed_solve_new, Method, MixedSolveOptions, MixedSolveResult as MixedSolveResultNew};
+
+// Re-export main types and functions from a_mat
+pub use a_mat::{a_mat as a_mat_new, AMatOptions, AMatResult, ImputeMethod, ShrinkConfig, ShrinkMethod};
 
 use anyhow::{anyhow, Result};
 use binx_core::{GenotypeMatrixBiallelic, KinshipMatrix};
