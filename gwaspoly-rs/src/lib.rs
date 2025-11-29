@@ -12,15 +12,89 @@
 
 use anyhow::{anyhow, Result};
 use binx_core::{
-    fit_null_mixed_model, load_genotypes_biallelic_from_tsv, load_kinship_from_tsv,
-    load_phenotypes_from_tsv, GenotypeMatrixBiallelic, KinshipMatrix, MixedModelCache,
+    load_genotypes_biallelic_from_tsv, load_kinship_from_tsv,
+    load_phenotypes_from_tsv, GenotypeMatrixBiallelic, KinshipMatrix,
 };
 use binx_kinship::compute_kinship_gwaspoly;
 use nalgebra::{DMatrix, DVector};
 use ndarray::{Array1, Array2, Axis};
-use rrblup_rs::compute_loco_kinship;
+use rrblup_rs::{compute_loco_kinship, mixed_solve_new, MixedSolveOptions};
 use statrs::distribution::{ContinuousCDF, FisherSnedecor};
 use std::collections::HashMap;
+
+/// Cached quantities from fitting the null mixed model.
+/// Used for efficient marker testing via P3D (population parameters previously determined).
+#[derive(Debug, Clone)]
+pub struct GwasCache {
+    pub sample_ids: Vec<String>,
+    pub n_obs: usize,
+    pub n_ind: usize,
+    pub h_inv: DMatrix<f64>,
+    pub sigma2: f64,
+    pub lambda: f64,
+    pub vu: f64,
+    pub ve: f64,
+}
+
+/// Fit null mixed model using the validated rrblup-rs mixed_solve implementation.
+///
+/// This wraps rrblup_rs::mixed_solve_new (faithful R/rrBLUP::mixed.solve implementation)
+/// for use in GWAS marker testing.
+fn fit_null_model(
+    y: &Array1<f64>,
+    x0: &Array2<f64>,
+    kinship: &KinshipMatrix,
+    z: Option<&Array2<f64>>,
+    obs_ids: Option<&[String]>,
+) -> Result<GwasCache> {
+    let n = y.len();
+    let m = kinship.matrix.nrows();
+
+    // Convert y to slice
+    let y_slice: Vec<f64> = y.iter().cloned().collect();
+
+    // Convert X to DMatrix
+    let x_dmat = DMatrix::from_fn(x0.nrows(), x0.ncols(), |i, j| x0[(i, j)]);
+
+    // Convert K to DMatrix
+    let k_dmat = DMatrix::from_fn(m, m, |i, j| kinship.matrix[(i, j)]);
+
+    // Convert Z to DMatrix if provided
+    let z_dmat = z.map(|z_arr| {
+        DMatrix::from_fn(z_arr.nrows(), z_arr.ncols(), |i, j| z_arr[(i, j)])
+    });
+
+    // Call validated mixed_solve_new with return_hinv=true
+    let opts = MixedSolveOptions {
+        return_hinv: true,
+        ..Default::default()
+    };
+
+    let result = mixed_solve_new(
+        &y_slice,
+        z_dmat.as_ref(),
+        Some(&k_dmat),
+        Some(&x_dmat),
+        Some(opts),
+    )?;
+
+    let h_inv = result.hinv
+        .ok_or_else(|| anyhow!("H_inv not computed by mixed_solve"))?;
+
+    let ids = obs_ids.map(|s| s.to_vec())
+        .unwrap_or_else(|| kinship.sample_ids.clone());
+
+    Ok(GwasCache {
+        sample_ids: ids,
+        n_obs: n,
+        n_ind: m,
+        h_inv,
+        sigma2: result.ve,
+        lambda: result.ve / result.vu.max(1e-10),
+        vu: result.vu,
+        ve: result.ve,
+    })
+}
 
 /// Gene action models supported by GWASpoly
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -267,7 +341,7 @@ pub fn run_gwaspoly(
             let kin_aligned = align_kinship_to_genotypes_clone(kin, &geno.sample_ids)?;
 
             // Fit null model with Z matrix for repeated observations
-            let cache = fit_null_mixed_model(
+            let cache = fit_null_model(
                 &y,
                 &x0,
                 &kin_aligned,
@@ -325,7 +399,7 @@ pub fn run_gwaspoly(
         eprintln!("DEBUG: y mean={:.4}, var={:.4}", y_mean, y_var);
 
         // Fit null model with Z matrix for repeated observations
-        let cache = fit_null_mixed_model(
+        let cache = fit_null_model(
             &y,
             &x0,
             &kin_aligned,
@@ -377,7 +451,7 @@ fn test_marker_all_models_with_z(
     marker_idx: usize,
     y: &Array1<f64>,
     base_design: &[Vec<f64>],
-    cache: &MixedModelCache,
+    cache: &GwasCache,
     _z_mat: &Array2<f64>,  // Z matrix (kept for API consistency, expansion done via obs_to_geno)
     obs_to_geno: &[usize],
     models: &[GeneActionModel],
@@ -655,7 +729,7 @@ fn lmm_score_test(
     marker_design: &[Vec<f64>],
     y: &Array1<f64>,
     base_design: &[Vec<f64>],
-    cache: &MixedModelCache,
+    cache: &GwasCache,
 ) -> Result<(f64, f64, Option<f64>)> {
     let n = y.len();
     let p0 = base_design.len();
