@@ -112,13 +112,16 @@ Estimate genotype dosages from sequencing read counts.
 - `--verbose` — Show progress
 
 ### binx convert
-Convert VCF (with AD field) to Binx two-line CSV format.
+Convert VCF to other formats.
 
 **Required:**
 - `--vcf <file>` — Input VCF file (plain or gzipped)
-- `--output <file>` — Output CSV path
+- `--output <file>` — Output path
 
 **Optional:**
+- `--format <fmt>` — Output format (default: `csv`):
+  - `csv` — Two-line format with ref/total counts from AD field
+  - `gwaspoly` — GWASpoly genotype format with dosages from GT field
 - `--verbose` — Show progress
 
 ### binx multigwas

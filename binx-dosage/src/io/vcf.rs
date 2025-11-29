@@ -347,3 +347,132 @@ where
 {
     stream_vcf_records_with_config(path, on_header, on_record, VcfStreamConfig::default())
 }
+
+use super::VcfRecordDosage;
+
+/// Parse a GT field and return the dosage (count of alternate alleles).
+/// Returns None for missing data (./., ., etc.)
+fn parse_gt_dosage(gt: &str) -> Option<u8> {
+    if gt.is_empty() || gt == "." {
+        return None;
+    }
+
+    let mut alt_count: u8 = 0;
+    let mut has_valid = false;
+
+    // Split by / or | (phased or unphased)
+    for allele in gt.split(|c| c == '/' || c == '|') {
+        let allele = allele.trim();
+        if allele.is_empty() || allele == "." {
+            continue;
+        }
+        has_valid = true;
+        // Any allele > 0 is an alternate
+        if let Ok(a) = allele.parse::<u8>() {
+            if a > 0 {
+                alt_count = alt_count.saturating_add(1);
+            }
+        }
+    }
+
+    if has_valid {
+        Some(alt_count)
+    } else {
+        None
+    }
+}
+
+/// Stream VCF records and extract GT-based dosages (count of alt alleles per sample).
+pub fn stream_vcf_gt_dosages<F, H>(
+    path: &str,
+    mut on_header: H,
+    mut on_record: F,
+) -> Result<(), Box<dyn Error>>
+where
+    F: FnMut(VcfRecordDosage),
+    H: FnMut(&[String]),
+{
+    let mut reader = vcf_reader(path)?;
+    let mut line = String::with_capacity(8192);
+    let mut sample_count: Option<usize> = None;
+
+    loop {
+        line.clear();
+        let bytes = reader.read_line(&mut line)?;
+        if bytes == 0 {
+            break;
+        }
+        let trimmed = line.trim_end_matches(&['\n', '\r'][..]);
+        if trimmed.is_empty() || trimmed.starts_with("##") {
+            continue;
+        }
+        if trimmed.starts_with("#CHROM") {
+            let mut header_fields = trimmed.split('\t');
+            // Skip first 9 fixed columns
+            for _ in 0..9 {
+                if header_fields.next().is_none() {
+                    return Err("Header has fewer than 9 columns".into());
+                }
+            }
+            let names: Vec<String> = header_fields.map(|s| s.to_string()).collect();
+            sample_count = Some(names.len());
+            on_header(&names);
+            continue;
+        }
+
+        // Parse data line
+        let mut fields = trimmed.split('\t');
+        let chrom = fields.next().ok_or("Missing CHROM")?;
+        let pos_str = fields.next().ok_or("Missing POS")?;
+        let id = fields.next().ok_or("Missing ID")?;
+        let _ref = fields.next().ok_or("Missing REF")?;
+        let _alt = fields.next().ok_or("Missing ALT")?;
+        let _qual = fields.next().ok_or("Missing QUAL")?;
+        let _filter = fields.next().ok_or("Missing FILTER")?;
+        let _info = fields.next().ok_or("Missing INFO")?;
+        let format = fields.next().ok_or("Missing FORMAT")?;
+
+        // Find GT index in FORMAT
+        let gt_idx = format.split(':').position(|f| f == "GT");
+        let gt_idx = match gt_idx {
+            Some(i) => i,
+            None => {
+                eprintln!("Warning: No GT in FORMAT for locus {}, skipping", id);
+                continue;
+            }
+        };
+
+        let pos: u64 = pos_str.parse().unwrap_or(0);
+        let locus_id = if id == "." {
+            format!("{}:{}", chrom, pos)
+        } else {
+            id.to_string()
+        };
+
+        let mut dosages = Vec::with_capacity(sample_count.unwrap_or(100));
+        for sample_str in fields {
+            let tokens: Vec<&str> = sample_str.split(':').collect();
+            let gt = tokens.get(gt_idx).copied().unwrap_or(".");
+            dosages.push(parse_gt_dosage(gt));
+        }
+
+        if let Some(expected) = sample_count {
+            if dosages.len() != expected {
+                eprintln!(
+                    "Warning: Sample count mismatch at {} (expected {}, got {})",
+                    locus_id, expected, dosages.len()
+                );
+                continue;
+            }
+        }
+
+        on_record(VcfRecordDosage {
+            id: locus_id,
+            dosages,
+            chrom: Arc::new(chrom.to_string()),
+            pos,
+        });
+    }
+
+    Ok(())
+}

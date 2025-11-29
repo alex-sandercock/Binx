@@ -174,15 +174,19 @@ enum Commands {
         verbose: bool,
     },
 
-    /// Convert VCF (with AD field) to Binx two-line CSV format
+    /// Convert VCF to other formats
     Convert {
         /// Input VCF file (plain or gzipped)
         #[arg(long)]
         vcf: String,
 
-        /// Output CSV path (two-line format: ref counts then total counts per locus)
+        /// Output path
         #[arg(long)]
         output: String,
+
+        /// Output format: csv (two-line ref/total counts from AD) or gwaspoly (dosages from GT)
+        #[arg(long, default_value = "csv")]
+        format: String,
 
         /// Enable verbose progress output
         #[arg(long, default_value_t = false)]
@@ -354,8 +358,15 @@ fn main() -> Result<()> {
                 compress_mode,
             )?;
         }
-        Commands::Convert { vcf, output, verbose } => {
-            convert_vcf_to_csv(&vcf, &output, verbose)?;
+        Commands::Convert { vcf, output, format, verbose } => {
+            match format.as_str() {
+                "csv" => convert_vcf_to_csv(&vcf, &output, verbose)?,
+                "gwaspoly" => convert_vcf_to_gwaspoly(&vcf, &output, verbose)?,
+                _ => {
+                    eprintln!("Invalid format: {}. Use 'csv' or 'gwaspoly'", format);
+                    std::process::exit(1);
+                }
+            }
         }
     }
 
@@ -427,6 +438,99 @@ fn convert_vcf_to_csv(vcf_path: &str, output_path: &str, verbose: bool) -> Resul
             }
             for &c in rec.total_counts.iter() {
                 if let Err(e) = write!(w, ",{}", c) {
+                    *write_error.borrow_mut() = Some(anyhow::anyhow!(e));
+                    return;
+                }
+            }
+            if let Err(e) = writeln!(w) {
+                *write_error.borrow_mut() = Some(anyhow::anyhow!(e));
+                return;
+            }
+
+            if verbose && last_report.borrow().elapsed().as_secs_f64() >= 2.0 {
+                let mut lr = last_report.borrow_mut();
+                *lr = Instant::now();
+                let count = {
+                    let mut p = processed.borrow_mut();
+                    *p += 1;
+                    *p
+                };
+                eprint!("\rConverted {} loci...", count);
+                let _ = std::io::stderr().flush();
+            } else {
+                let mut p = processed.borrow_mut();
+                *p += 1;
+            }
+        },
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to read VCF: {}", e))?;
+
+    if let Some(e) = write_error.into_inner() {
+        return Err(e);
+    }
+
+    writer.into_inner().flush()?;
+    if verbose {
+        let count = processed.into_inner();
+        eprintln!("\nWrote {} loci to {}", count, output_path);
+    }
+    Ok(())
+}
+
+fn convert_vcf_to_gwaspoly(vcf_path: &str, output_path: &str, verbose: bool) -> Result<()> {
+    use binx_dosage::io::{stream_vcf_gt_dosages, VcfRecordDosage};
+
+    let writer = RefCell::new(BufWriter::with_capacity(64 * 1024, File::create(output_path)?));
+    let header_written = RefCell::new(false);
+    let write_error = RefCell::new(None::<anyhow::Error>);
+    let processed = RefCell::new(0usize);
+    let last_report = RefCell::new(Instant::now());
+
+    stream_vcf_gt_dosages(
+        vcf_path,
+        |names| {
+            let mut w = writer.borrow_mut();
+            // GWASpoly format header: Marker, Chrom, Position, Sample1, Sample2, ...
+            if let Err(e) = write!(w, "Marker\tChrom\tPosition") {
+                *write_error.borrow_mut() = Some(anyhow::anyhow!(e));
+                return;
+            }
+            for name in names {
+                if let Err(e) = write!(w, "\t{}", name) {
+                    *write_error.borrow_mut() = Some(anyhow::anyhow!(e));
+                    return;
+                }
+            }
+            if let Err(e) = writeln!(w) {
+                *write_error.borrow_mut() = Some(anyhow::anyhow!(e));
+            } else {
+                *header_written.borrow_mut() = true;
+            }
+        },
+        |rec: VcfRecordDosage| {
+            if write_error.borrow().is_some() {
+                return;
+            }
+            if !*header_written.borrow() {
+                *write_error.borrow_mut() =
+                    Some(anyhow::anyhow!("VCF header with sample names was not found"));
+                return;
+            }
+
+            let mut w = writer.borrow_mut();
+            // Write marker ID, chromosome, position
+            if let Err(e) = write!(w, "{}\t{}\t{}", rec.id, rec.chrom, rec.pos) {
+                *write_error.borrow_mut() = Some(anyhow::anyhow!(e));
+                return;
+            }
+
+            // Write dosages (NA for missing)
+            for dosage in &rec.dosages {
+                let val = match dosage {
+                    Some(d) => d.to_string(),
+                    None => "NA".to_string(),
+                };
+                if let Err(e) = write!(w, "\t{}", val) {
                     *write_error.borrow_mut() = Some(anyhow::anyhow!(e));
                     return;
                 }
