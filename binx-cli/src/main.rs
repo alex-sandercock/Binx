@@ -88,7 +88,66 @@ enum Commands {
         out: String,
     },
 
-    /// Compute kinship matrix (VanRaden additive) from biallelic dosages
+    /// GWASpoly-style GWAS for polyploids with multiple genetic models
+    Gwaspoly {
+        /// Genotype dosage file (biallelic; markers x samples with chr/pos)
+        #[arg(long)]
+        geno: String,
+
+        /// Phenotype file (sample_id + traits)
+        #[arg(long)]
+        pheno: String,
+
+        /// Trait name to analyze
+        #[arg(long)]
+        trait_name: String,
+
+        /// Comma-separated covariate names from phenotype file
+        #[arg(long)]
+        covariates: Option<String>,
+
+        /// Optional kinship matrix TSV (sample_id + samples)
+        #[arg(long)]
+        kinship: Option<String>,
+
+        /// Allow dropping genotype samples that lack phenotypes
+        #[arg(long, default_value_t = false)]
+        allow_missing_samples: bool,
+
+        /// Optional environment column name to filter phenotype rows
+        #[arg(long)]
+        env_column: Option<String>,
+
+        /// Environment value to keep (used with --env-column)
+        #[arg(long)]
+        env_value: Option<String>,
+
+        /// Ploidy (e.g., 2, 4, 6)
+        #[arg(long)]
+        ploidy: u8,
+
+        /// Comma-separated gene action models (additive,general,1-dom-ref,1-dom-alt,2-dom-ref,2-dom-alt,diplo-general,diplo-additive)
+        #[arg(long, default_value = "additive,general")]
+        models: String,
+
+        /// Use LOCO (Leave-One-Chromosome-Out) kinship matrices
+        #[arg(long, default_value_t = false)]
+        loco: bool,
+
+        /// Minimum minor allele frequency (0.0-0.5)
+        #[arg(long, default_value = "0.0")]
+        min_maf: f64,
+
+        /// Maximum genotype frequency for QC (0.0-1.0, 0 for auto)
+        #[arg(long, default_value = "0.0")]
+        max_geno_freq: f64,
+
+        /// Output results CSV
+        #[arg(long)]
+        out: String,
+    },
+
+    /// Compute kinship matrix from biallelic dosages
     Kinship {
         /// Genotype dosage file (biallelic; markers x samples)
         #[arg(long)]
@@ -97,6 +156,10 @@ enum Commands {
         /// Ploidy (e.g., 2, 4, 6)
         #[arg(long)]
         ploidy: u8,
+
+        /// Kinship method: vanraden (default) or gwaspoly
+        #[arg(long, default_value = "vanraden")]
+        method: String,
 
         /// Output TSV path for kinship matrix
         #[arg(long)]
@@ -216,8 +279,63 @@ fn main() -> Result<()> {
                 &out,
             )?;
         }
-        Commands::Kinship { geno, ploidy, out } => {
-            binx_kinship::run_kinship(&geno, ploidy, &out)?;
+        Commands::Kinship { geno, ploidy, method, out } => {
+            let kin_method = binx_kinship::KinshipMethod::from_str(&method).unwrap_or_else(|e| {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            });
+            binx_kinship::run_kinship(&geno, ploidy, kin_method, &out)?;
+        }
+        Commands::Gwaspoly {
+            geno,
+            pheno,
+            trait_name,
+            covariates,
+            kinship,
+            allow_missing_samples,
+            env_column,
+            env_value,
+            ploidy,
+            models,
+            loco,
+            min_maf,
+            max_geno_freq,
+            out,
+        } => {
+            let covariate_list = covariates.as_deref().map(parse_csv_list);
+            let model_list: Vec<gwaspoly_rs::GeneActionModel> = models
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| {
+                    gwaspoly_rs::GeneActionModel::from_str(s).unwrap_or_else(|e| {
+                        eprintln!("Invalid model '{}': {}", s, e);
+                        std::process::exit(1);
+                    })
+                })
+                .collect();
+
+            if model_list.is_empty() {
+                eprintln!("No valid models specified");
+                std::process::exit(1);
+            }
+
+            gwaspoly_rs::run_gwaspoly(
+                &geno,
+                &pheno,
+                &trait_name,
+                covariate_list.as_deref(),
+                kinship.as_deref(),
+                allow_missing_samples,
+                env_column.as_deref(),
+                env_value.as_deref(),
+                ploidy,
+                &model_list,
+                loco,
+                min_maf,
+                max_geno_freq,
+                &out,
+            )?;
         }
         Commands::Dosage { csv, counts, ref_path, total_path, vcf, chunk_size, threads, output, ploidy, mode, format, compress, verbose } => {
             let fit_mode = match mode.as_str() {
