@@ -13,6 +13,16 @@ Rust command-line genomics workbench for diploid and polyploid species. `binx` t
 - Polyploid-aware: supports ploidy levels 2, 4, 6, etc.
 - Handles repeated phenotype IDs (multi-environment trials) and LOCO (Leave-One-Chromosome-Out)
 
+## TODO
+- Fix GWASpoly LOCO (results not matching R/GWASpoly LOCO)
+- Fix GWASpoly handling of covariates (default seems to already account for them?)
+- Draft mdbooks pages and deploy to readthedocs or github pages
+- Update documentation within codebase
+- Upload package to crates.io
+- Ensure licenses are updated and references to GWASpoly, Updog, and rrBLUP are present
+- Comprehensive benchmarking against R (<code style="color : red">and python rrBLUP</code>) implementations
+- Upload to homebrew?
+
 ## Installation
 
 Requires a Rust toolchain (`cargo` + `rustc`).
