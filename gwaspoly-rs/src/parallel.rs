@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use binx_core::GenotypeMatrixBiallelic;
-use crate::{GeneActionModel, GwasCache, MarkerResult};
+use crate::gwaspoly::{GeneActionModel, GwasCache, MarkerResult};
 
 /// Test all markers in parallel using pre-computed null model cache.
 ///
@@ -80,6 +80,61 @@ pub fn test_markers_parallel(
 
     // Flatten results, propagating any errors
     let mut all_results = Vec::with_capacity(n_markers * models.len());
+    for result in results {
+        all_results.extend(result?);
+    }
+
+    Ok(all_results)
+}
+
+/// Test a subset of markers in parallel (for LOCO mode).
+///
+/// This version takes a list of marker indices to test, useful when
+/// different chromosomes need different null models.
+pub fn test_markers_parallel_subset(
+    geno: &GenotypeMatrixBiallelic,
+    marker_indices: &[usize],
+    y: &Array1<f64>,
+    base_design: &[Vec<f64>],
+    cache: &GwasCache,
+    obs_to_geno: &[usize],
+    models: &[GeneActionModel],
+    ploidy: u8,
+    min_maf: f64,
+    max_geno_freq: f64,
+) -> Result<Vec<MarkerResult>> {
+    let n_genotypes_for_qc = geno.sample_ids.len();
+
+    // Wrap shared data in Arc for thread-safe sharing
+    let geno_arc: Arc<GenotypeMatrixBiallelic> = Arc::new(geno.clone());
+    let y_arc: Arc<Array1<f64>> = Arc::new(y.clone());
+    let base_design_arc: Arc<Vec<Vec<f64>>> = Arc::new(base_design.to_vec());
+    let cache_arc: Arc<GwasCache> = Arc::new(cache.clone());
+    let obs_to_geno_arc: Arc<Vec<usize>> = Arc::new(obs_to_geno.to_vec());
+    let models_arc: Arc<Vec<GeneActionModel>> = Arc::new(models.to_vec());
+
+    // Process markers in parallel
+    let results: Vec<Result<Vec<MarkerResult>>> = marker_indices
+        .par_iter()
+        .map(|&marker_idx| {
+            test_marker_parallel(
+                &geno_arc,
+                marker_idx,
+                &y_arc,
+                &base_design_arc,
+                &cache_arc,
+                &obs_to_geno_arc,
+                &models_arc,
+                ploidy,
+                min_maf,
+                max_geno_freq,
+                n_genotypes_for_qc,
+            )
+        })
+        .collect();
+
+    // Flatten results, propagating any errors
+    let mut all_results = Vec::with_capacity(marker_indices.len() * models.len());
     for result in results {
         all_results.extend(result?);
     }
