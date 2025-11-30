@@ -17,6 +17,8 @@ Rust command-line genomics workbench for diploid and polyploid species. `binx` t
 - Fix GWASpoly LOCO (results not matching R/GWASpoly LOCO)
 - Fix GWASpoly handling of covariates (default seems to already account for them?)
 - Fix the faer implementations in rrblup-rs mixed_solve_fast
+- Construct <code style="color : red">fastgwas</code> which would be a much faster polyploid GWAS, with slight accuracy loss.
+- Frame out <code style="color : red">multigwas</code> which would support multiallelic loci in a GWAS
 - Draft mdbooks pages and deploy to readthedocs or github pages
 - Clean up/Update documentation and comments within codebase
 - Upload package to crates.io
