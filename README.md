@@ -16,6 +16,7 @@ Rust command-line genomics workbench for diploid and polyploid species. `binx` t
 ## TODO
 - Fix GWASpoly LOCO (results not matching R/GWASpoly LOCO)
 - Fix GWASpoly handling of covariates (default seems to already account for them?)
+- Fix the faer implementations in rrblup-rs mixed_solve_fast
 - Draft mdbooks pages and deploy to readthedocs or github pages
 - Update documentation within codebase
 - Upload package to crates.io
