@@ -11,6 +11,9 @@
 // Module for mixed.solve function
 pub mod mixed_solve;
 
+// Module for fast mixed.solve using faer eigendecomposition
+pub mod mixed_solve_fast;
+
 // Module for A.mat function
 pub mod a_mat;
 
@@ -19,6 +22,9 @@ pub mod kin_blup;
 
 // Re-export main types and functions from mixed_solve
 pub use mixed_solve::{mixed_solve as mixed_solve_new, Method, MixedSolveOptions, MixedSolveResult as MixedSolveResultNew};
+
+// Re-export fast mixed_solve
+pub use mixed_solve_fast::mixed_solve_fast;
 
 // Re-export main types and functions from a_mat
 pub use a_mat::{a_mat as a_mat_new, AMatOptions, AMatResult, ImputeMethod, ShrinkConfig, ShrinkMethod};

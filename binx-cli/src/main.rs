@@ -98,6 +98,10 @@ enum Commands {
         /// Output results CSV
         #[arg(long)]
         out: String,
+
+        /// Use parallel marker testing (experimental)
+        #[arg(long, default_value_t = false)]
+        parallel: bool,
     },
 
     /// Compute kinship matrix from biallelic dosages
@@ -243,6 +247,7 @@ fn main() -> Result<()> {
             min_maf,
             max_geno_freq,
             out,
+            parallel,
         } => {
             let covariate_list = covariates.as_deref().map(parse_csv_list);
             let model_list: Vec<gwaspoly_rs::GeneActionModel> = models
@@ -262,6 +267,9 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
 
+            if parallel {
+                eprintln!("Using parallel marker testing...");
+            }
             gwaspoly_rs::run_gwaspoly(
                 &geno,
                 &pheno,
@@ -277,6 +285,7 @@ fn main() -> Result<()> {
                 min_maf,
                 max_geno_freq,
                 &out,
+                parallel,
             )?;
         }
         Commands::Dosage { csv, counts, ref_path, total_path, vcf, chunk_size, threads, output, ploidy, mode, format, compress, verbose } => {

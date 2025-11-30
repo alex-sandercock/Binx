@@ -22,6 +22,9 @@ use rrblup_rs::{compute_loco_kinship, mixed_solve_new, MixedSolveOptions};
 use statrs::distribution::{ContinuousCDF, FisherSnedecor};
 use std::collections::HashMap;
 
+// Parallel marker testing module
+pub mod parallel;
+
 /// Cached quantities from fitting the null mixed model.
 /// Used for efficient marker testing via P3D (population parameters previously determined).
 #[derive(Debug, Clone)]
@@ -196,6 +199,7 @@ pub fn run_gwaspoly(
     min_maf: f64,
     max_geno_freq: f64,
     out_path: &str,
+    use_parallel: bool,
 ) -> Result<()> {
     // Load data - don't filter by environment, include all observations
     let geno_full = load_genotypes_biallelic_from_tsv(geno_path, ploidy)?;
@@ -399,6 +403,8 @@ pub fn run_gwaspoly(
         eprintln!("DEBUG: y mean={:.4}, var={:.4}", y_mean, y_var);
 
         // Fit null model with Z matrix for repeated observations
+        // Note: We use the validated mixed_solve_new for accuracy.
+        // The speedup comes from parallel marker testing (rayon).
         let cache = fit_null_model(
             &y,
             &x0,
@@ -419,23 +425,38 @@ pub fn run_gwaspoly(
             eprintln!("  {:?}", row);
         }
 
-        // Test all markers
-        for marker_idx in 0..geno.marker_ids.len() {
-            let marker_results = test_marker_all_models_with_z(
+        // Test all markers (parallel or sequential)
+        if use_parallel {
+            let parallel_results = parallel::test_markers_parallel(
                 &geno,
-                marker_idx,
                 &y,
                 &base_design,
                 &cache,
-                &z_mat,
                 &obs_to_geno,
                 models,
                 ploidy,
                 min_maf,
                 max_gf,
-                n_genotypes_for_qc,
             )?;
-            all_results.extend(marker_results);
+            all_results.extend(parallel_results);
+        } else {
+            for marker_idx in 0..geno.marker_ids.len() {
+                let marker_results = test_marker_all_models_with_z(
+                    &geno,
+                    marker_idx,
+                    &y,
+                    &base_design,
+                    &cache,
+                    &z_mat,
+                    &obs_to_geno,
+                    models,
+                    ploidy,
+                    min_maf,
+                    max_gf,
+                    n_genotypes_for_qc,
+                )?;
+                all_results.extend(marker_results);
+            }
         }
     }
 
