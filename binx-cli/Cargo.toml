@@ -15,6 +15,7 @@ clap = { version = "4.5", features = ["derive"] }
 binx-multigwas = { path = "../binx-multigwas" }
 binx-kinship = { path = "../binx-kinship" }
 binx-dosage = { path = "../binx-dosage" }
+binx-plotting = { path = "../binx-plotting" }
 gwaspoly-rs = { path = "../gwaspoly-rs" }
 
 [dev-dependencies]

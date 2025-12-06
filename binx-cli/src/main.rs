@@ -102,6 +102,14 @@ enum Commands {
         /// Use parallel marker testing (experimental)
         #[arg(long, default_value_t = false)]
         parallel: bool,
+
+        /// Generate plots after GWAS (manhattan, qq, or both)
+        #[arg(long)]
+        plot: Option<String>,
+
+        /// Output path for plots (default: <out>.manhattan.svg, <out>.qq.svg)
+        #[arg(long)]
+        plot_output: Option<String>,
     },
 
     /// Compute kinship matrix from biallelic dosages
@@ -196,6 +204,49 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         verbose: bool,
     },
+
+    /// Generate GWAS plots (Manhattan, QQ) from results
+    Plot {
+        /// Input GWAS results CSV file
+        #[arg(long)]
+        input: String,
+
+        /// Output file path (extension determines format: .svg or .png)
+        #[arg(long)]
+        output: String,
+
+        /// Plot type: manhattan or qq
+        #[arg(long, default_value = "manhattan")]
+        plot_type: String,
+
+        /// Filter to specific model (e.g., additive, general)
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Significance threshold as -log10(p), default 5.0
+        #[arg(long, default_value = "5.0")]
+        threshold: f64,
+
+        /// Suggestive threshold as -log10(p), default 3.0 (use 0 to disable)
+        #[arg(long, default_value = "3.0")]
+        suggestive: f64,
+
+        /// Plot title
+        #[arg(long)]
+        title: Option<String>,
+
+        /// Color theme: classic, nature, colorful, dark, high_contrast
+        #[arg(long, default_value = "classic")]
+        theme: String,
+
+        /// Plot width in pixels
+        #[arg(long, default_value = "1200")]
+        width: u32,
+
+        /// Plot height in pixels
+        #[arg(long, default_value = "600")]
+        height: u32,
+    },
 }
 
 fn main() -> Result<()> {
@@ -248,6 +299,8 @@ fn main() -> Result<()> {
             max_geno_freq,
             out,
             parallel,
+            plot,
+            plot_output,
         } => {
             let covariate_list = covariates.as_deref().map(parse_csv_list);
             let model_list: Vec<gwaspoly_rs::GeneActionModel> = models
@@ -287,6 +340,43 @@ fn main() -> Result<()> {
                 &out,
                 parallel,
             )?;
+
+            // Generate plots if requested
+            if let Some(plot_types) = plot {
+                use binx_plotting::{manhattan_plot, qq_plot, PlotConfig, load_gwas_results};
+
+                eprintln!("Loading results for plotting...");
+                let results = load_gwas_results(&out)?;
+
+                let base_path = plot_output.as_deref().unwrap_or(&out);
+                let config = PlotConfig::default();
+
+                for plot_type in plot_types.split(',').map(|s| s.trim()) {
+                    match plot_type {
+                        "manhattan" => {
+                            let path = format!("{}.manhattan.svg", base_path.trim_end_matches(".csv"));
+                            eprintln!("Generating Manhattan plot: {}", path);
+                            manhattan_plot(&results, &path, config.clone())?;
+                        }
+                        "qq" => {
+                            let path = format!("{}.qq.svg", base_path.trim_end_matches(".csv"));
+                            eprintln!("Generating QQ plot: {}", path);
+                            qq_plot(&results, &path, config.clone())?;
+                        }
+                        "both" => {
+                            let manhattan_path = format!("{}.manhattan.svg", base_path.trim_end_matches(".csv"));
+                            let qq_path = format!("{}.qq.svg", base_path.trim_end_matches(".csv"));
+                            eprintln!("Generating Manhattan plot: {}", manhattan_path);
+                            manhattan_plot(&results, &manhattan_path, config.clone())?;
+                            eprintln!("Generating QQ plot: {}", qq_path);
+                            qq_plot(&results, &qq_path, config.clone())?;
+                        }
+                        _ => {
+                            eprintln!("Unknown plot type '{}', skipping. Use: manhattan, qq, or both", plot_type);
+                        }
+                    }
+                }
+            }
         }
         Commands::Dosage { csv, counts, ref_path, total_path, vcf, chunk_size, threads, output, ploidy, mode, format, compress, verbose } => {
             let fit_mode = match mode.as_str() {
@@ -376,6 +466,20 @@ fn main() -> Result<()> {
                     std::process::exit(1);
                 }
             }
+        }
+        Commands::Plot {
+            input,
+            output,
+            plot_type,
+            model,
+            threshold,
+            suggestive,
+            title,
+            theme,
+            width,
+            height,
+        } => {
+            run_plot(&input, &output, &plot_type, model.as_deref(), threshold, suggestive, title, &theme, width, height)?;
         }
     }
 
@@ -576,5 +680,78 @@ fn convert_vcf_to_gwaspoly(vcf_path: &str, output_path: &str, verbose: bool) -> 
         let count = processed.into_inner();
         eprintln!("\nWrote {} loci to {}", count, output_path);
     }
+    Ok(())
+}
+
+fn run_plot(
+    input: &str,
+    output: &str,
+    plot_type: &str,
+    model: Option<&str>,
+    threshold: f64,
+    suggestive: f64,
+    title: Option<String>,
+    theme_name: &str,
+    width: u32,
+    height: u32,
+) -> Result<()> {
+    use binx_plotting::{manhattan_plot, qq_plot, PlotConfig, load_gwas_results, filter_by_model, themes::Theme};
+
+    // Load results
+    eprintln!("Loading GWAS results from {}...", input);
+    let mut results = load_gwas_results(input)?;
+
+    // Filter by model if specified
+    if let Some(m) = model {
+        let before = results.len();
+        results = filter_by_model(&results, m);
+        eprintln!("Filtered to model '{}': {} -> {} results", m, before, results.len());
+    }
+
+    if results.is_empty() {
+        anyhow::bail!("No results to plot after filtering");
+    }
+
+    // Parse theme
+    let theme = match theme_name {
+        "classic" => Theme::classic(),
+        "nature" => Theme::nature(),
+        "colorful" => Theme::colorful(),
+        "dark" => Theme::dark(),
+        "high_contrast" => Theme::high_contrast(),
+        _ => {
+            eprintln!("Unknown theme '{}', using classic", theme_name);
+            Theme::classic()
+        }
+    };
+
+    // Build config
+    let config = PlotConfig {
+        width,
+        height,
+        significance_threshold: threshold,
+        suggestive_threshold: if suggestive > 0.0 { Some(suggestive) } else { None },
+        title,
+        theme,
+        point_size: 3,
+        show_chrom_labels: true,
+    };
+
+    // Generate plot
+    match plot_type {
+        "manhattan" => {
+            eprintln!("Generating Manhattan plot...");
+            manhattan_plot(&results, output, config)?;
+        }
+        "qq" => {
+            eprintln!("Generating QQ plot...");
+            qq_plot(&results, output, config)?;
+        }
+        _ => {
+            anyhow::bail!("Unknown plot type '{}'. Use 'manhattan' or 'qq'", plot_type);
+        }
+    }
+
+    eprintln!("Plot saved to {}", output);
     Ok(())
 }

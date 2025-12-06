@@ -6,6 +6,7 @@ members = [
     "binx-cli",
     "binx-dosage",
     "binx-convert",
+    "binx-plotting",
     "rrblup-rs",
     "gwaspoly-rs",
 ]
