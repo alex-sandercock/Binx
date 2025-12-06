@@ -366,11 +366,17 @@ fn parse_gt_dosage(gt: &str) -> Option<u8> {
         if allele.is_empty() || allele == "." {
             continue;
         }
-        has_valid = true;
-        // Any allele > 0 is an alternate
-        if let Ok(a) = allele.parse::<u8>() {
-            if a > 0 {
-                alt_count = alt_count.saturating_add(1);
+        // Try to parse allele as u8; if it fails, treat as malformed
+        match allele.parse::<u8>() {
+            Ok(a) => {
+                has_valid = true;
+                if a > 0 {
+                    alt_count = alt_count.saturating_add(1);
+                }
+            }
+            Err(_) => {
+                // Malformed allele, return None for the whole genotype
+                return None;
             }
         }
     }
