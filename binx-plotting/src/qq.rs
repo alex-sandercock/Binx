@@ -5,10 +5,45 @@ use anyhow::{Result, Context};
 use plotters::prelude::*;
 use std::path::Path;
 
+/// Data for a single model's QQ plot
+struct ModelQQData {
+    name: String,
+    expected: Vec<f64>,
+    observed: Vec<f64>,
+}
+
+/// Prepare QQ data grouped by model
+fn prepare_qq_data(results: &[GwasPoint]) -> Vec<ModelQQData> {
+    // Collect unique models in order of first appearance
+    let mut models: Vec<String> = Vec::new();
+    for point in results {
+        if !models.contains(&point.model) {
+            models.push(point.model.clone());
+        }
+    }
+
+    // Calculate QQ values for each model
+    models.iter().map(|model_name| {
+        let model_results: Vec<&GwasPoint> = results
+            .iter()
+            .filter(|p| &p.model == model_name)
+            .collect();
+
+        let (expected, observed) = calculate_qq_values(&model_results);
+
+        ModelQQData {
+            name: model_name.clone(),
+            expected,
+            observed,
+        }
+    }).collect()
+}
+
 /// Generate a QQ plot from GWAS results
 ///
 /// The QQ plot compares the observed -log10(p-values) against the expected
 /// values under the null hypothesis (uniform distribution).
+/// When multiple models are present, each model is shown in a different color.
 ///
 /// # Arguments
 /// * `results` - GWAS results to plot
@@ -33,11 +68,12 @@ pub fn qq_plot<P: AsRef<Path>>(
         anyhow::bail!("No GWAS results to plot");
     }
 
-    // Calculate expected and observed values
-    let (expected, observed) = calculate_qq_values(results);
+    // Prepare data grouped by model
+    let model_data = prepare_qq_data(results);
 
-    let max_val = expected.iter()
-        .chain(observed.iter())
+    // Find max value across all models
+    let max_val = model_data.iter()
+        .flat_map(|m| m.expected.iter().chain(m.observed.iter()))
         .cloned()
         .fold(0.0_f64, f64::max);
     let axis_max = (max_val * 1.1).max(1.0);
@@ -49,16 +85,20 @@ pub fn qq_plot<P: AsRef<Path>>(
         .to_lowercase();
 
     match ext.as_str() {
-        "svg" => draw_qq_svg(output_path, &expected, &observed, &config, axis_max),
+        "svg" => draw_qq_svg(output_path, &model_data, &config, axis_max),
         #[cfg(feature = "png")]
-        "png" => draw_qq_png(output_path, &expected, &observed, &config, axis_max),
+        "png" => draw_qq_png(output_path, &model_data, &config, axis_max),
         _ => anyhow::bail!("Unsupported output format: {}", ext),
     }
 }
 
 /// Calculate expected and observed -log10(p) values for QQ plot
-fn calculate_qq_values(results: &[GwasPoint]) -> (Vec<f64>, Vec<f64>) {
+fn calculate_qq_values(results: &[&GwasPoint]) -> (Vec<f64>, Vec<f64>) {
     let n = results.len();
+
+    if n == 0 {
+        return (vec![], vec![]);
+    }
 
     // Sort p-values in ascending order
     let mut p_values: Vec<f64> = results.iter().map(|r| r.p_value).collect();
@@ -112,15 +152,14 @@ fn calculate_confidence_band(n: usize, expected: &[f64]) -> (Vec<f64>, Vec<f64>)
 
 fn draw_qq_svg(
     output_path: &Path,
-    expected: &[f64],
-    observed: &[f64],
+    model_data: &[ModelQQData],
     config: &PlotConfig,
     axis_max: f64,
 ) -> Result<()> {
     let root = SVGBackend::new(output_path, (config.height, config.height)) // Square plot
         .into_drawing_area();
 
-    draw_qq_impl(&root, expected, observed, config, axis_max)
+    draw_qq_impl(&root, model_data, config, axis_max)
         .context("Failed to draw QQ plot")?;
 
     root.present().context("Failed to write SVG")?;
@@ -130,15 +169,14 @@ fn draw_qq_svg(
 #[cfg(feature = "png")]
 fn draw_qq_png(
     output_path: &Path,
-    expected: &[f64],
-    observed: &[f64],
+    model_data: &[ModelQQData],
     config: &PlotConfig,
     axis_max: f64,
 ) -> Result<()> {
     let root = BitMapBackend::new(output_path, (config.height, config.height))
         .into_drawing_area();
 
-    draw_qq_impl(&root, expected, observed, config, axis_max)
+    draw_qq_impl(&root, model_data, config, axis_max)
         .context("Failed to draw QQ plot")?;
 
     root.present().context("Failed to write PNG")?;
@@ -147,18 +185,22 @@ fn draw_qq_png(
 
 fn draw_qq_impl<DB: DrawingBackend>(
     root: &DrawingArea<DB, plotters::coord::Shift>,
-    expected: &[f64],
-    observed: &[f64],
+    model_data: &[ModelQQData],
     config: &PlotConfig,
     axis_max: f64,
 ) -> Result<(), DrawingAreaErrorKind<DB::ErrorType>> {
     root.fill(&config.theme.background)?;
 
     let title = config.title.as_deref().unwrap_or("QQ Plot");
+    let has_multiple_models = model_data.len() > 1;
+
+    // Reserve space for legend on the right if multiple models
+    let right_margin = if has_multiple_models { 120 } else { 10 };
 
     let mut chart = ChartBuilder::on(root)
         .caption(title, ("sans-serif", 24).into_font().color(&config.theme.text))
         .margin(10)
+        .margin_right(right_margin)
         .x_label_area_size(50)
         .y_label_area_size(60)
         .build_cartesian_2d(0.0..axis_max, 0.0..axis_max)?;
@@ -174,21 +216,24 @@ fn draw_qq_impl<DB: DrawingBackend>(
         .axis_style(&config.theme.axis)
         .draw()?;
 
-    // Draw confidence band
-    let (ci_lower, ci_upper) = calculate_confidence_band(observed.len(), expected);
+    // Draw confidence band (use first model's data for the band, or combined if preferred)
+    // For simplicity, draw band based on total number of points
+    let total_points: usize = model_data.iter().map(|m| m.expected.len()).sum();
+    if total_points > 0 {
+        // Use evenly spaced expected values for the confidence band
+        let band_n = 100.min(total_points);
+        let band_expected: Vec<f64> = (1..=band_n)
+            .map(|i| -((i as f64) / ((band_n + 1) as f64)).log10())
+            .collect();
+        let (ci_lower, ci_upper) = calculate_confidence_band(band_n, &band_expected);
 
-    // Draw as filled area
-    let ci_points: Vec<_> = expected.iter()
-        .zip(ci_lower.iter())
-        .zip(ci_upper.iter())
-        .map(|((e, l), u)| (*e, *l, *u))
-        .collect();
-
-    for (exp, lower, upper) in &ci_points {
-        chart.draw_series(std::iter::once(Rectangle::new(
-            [(*exp - 0.02, *lower), (*exp + 0.02, *upper)],
-            config.theme.confidence_band.filled(),
-        )))?;
+        for (exp, (lower, upper)) in band_expected.iter().zip(ci_lower.iter().zip(ci_upper.iter())) {
+            let width = axis_max * 0.008;
+            chart.draw_series(std::iter::once(Rectangle::new(
+                [(*exp - width, *lower), (*exp + width, *upper)],
+                config.theme.confidence_band.filled(),
+            )))?;
+        }
     }
 
     // Draw diagonal reference line (y = x)
@@ -197,15 +242,61 @@ fn draw_qq_impl<DB: DrawingBackend>(
         config.theme.reference_line.stroke_width(2),
     ))?;
 
-    // Draw points
-    let point_color = &config.theme.chromosome_colors[0];
+    // Draw points for each model with different colors
+    let colors = &config.theme.chromosome_colors;
     let point_size = config.point_size;
 
-    chart.draw_series(
-        expected.iter()
-            .zip(observed.iter())
-            .map(|(e, o)| Circle::new((*e, *o), point_size, point_color.filled()))
-    )?;
+    // Define a palette for models (extend if needed)
+    let model_colors: Vec<RGBColor> = vec![
+        RGBColor(31, 119, 180),   // Blue
+        RGBColor(255, 127, 14),   // Orange
+        RGBColor(44, 160, 44),    // Green
+        RGBColor(214, 39, 40),    // Red
+        RGBColor(148, 103, 189),  // Purple
+        RGBColor(140, 86, 75),    // Brown
+        RGBColor(227, 119, 194),  // Pink
+        RGBColor(127, 127, 127),  // Gray
+    ];
+
+    for (model_idx, model) in model_data.iter().enumerate() {
+        let color = if has_multiple_models {
+            &model_colors[model_idx % model_colors.len()]
+        } else {
+            &colors[0]
+        };
+
+        chart.draw_series(
+            model.expected.iter()
+                .zip(model.observed.iter())
+                .map(|(e, o)| Circle::new((*e, *o), point_size, color.filled()))
+        )?;
+    }
+
+    // Draw legend if multiple models
+    if has_multiple_models {
+        let legend_x = axis_max * 1.05;
+        let legend_y_start = axis_max * 0.95;
+        let legend_spacing = axis_max * 0.08;
+
+        for (idx, model) in model_data.iter().enumerate() {
+            let y_pos = legend_y_start - (idx as f64 * legend_spacing);
+            let color = &model_colors[idx % model_colors.len()];
+
+            // Draw color sample
+            chart.draw_series(std::iter::once(Circle::new(
+                (legend_x, y_pos),
+                point_size,
+                color.filled(),
+            )))?;
+
+            // Draw model name
+            chart.draw_series(std::iter::once(Text::new(
+                model.name.clone(),
+                (legend_x + axis_max * 0.03, y_pos),
+                ("sans-serif", 10).into_font().color(&config.theme.text),
+            )))?;
+        }
+    }
 
     Ok(())
 }

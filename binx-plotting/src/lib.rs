@@ -27,23 +27,63 @@ pub mod themes;
 pub mod output;
 
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::path::Path;
+
+/// Deserialize an optional f64, treating "NA", "NaN", empty strings as None
+fn deserialize_optional_f64<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s: Option<String> = Option::deserialize(deserializer)?;
+    match s {
+        None => Ok(None),
+        Some(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("na") || trimmed.eq_ignore_ascii_case("nan") {
+                Ok(None)
+            } else {
+                trimmed.parse::<f64>()
+                    .map(Some)
+                    .map_err(serde::de::Error::custom)
+            }
+        }
+    }
+}
 
 /// A GWAS result point for plotting
 #[derive(Debug, Clone, Deserialize)]
 pub struct GwasPoint {
     pub marker_id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub chrom: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_f64")]
     pub pos: Option<f64>,
     pub model: String,
     pub score: f64,      // -log10(p_value)
     pub p_value: f64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_f64")]
     pub effect: Option<f64>,
     pub n_obs: usize,
+}
+
+/// Deserialize an optional string, treating "NA" and empty strings as None
+fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s: Option<String> = Option::deserialize(deserializer)?;
+    match s {
+        None => Ok(None),
+        Some(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("na") {
+                Ok(None)
+            } else {
+                Ok(Some(trimmed.to_string()))
+            }
+        }
+    }
 }
 
 /// Configuration for plot appearance

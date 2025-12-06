@@ -201,23 +201,23 @@ fn draw_manhattan_png(
 /// Shape types for different models
 #[derive(Clone, Copy)]
 enum PointShape {
-    Circle,
-    Triangle,
-    Square,
-    Diamond,
+    CircleFilled,
+    TriangleFilled,
+    CircleOutline,
+    TriangleOutline,
     Cross,
-    Star,
+    Plus,
 }
 
 impl PointShape {
     fn from_index(idx: usize) -> Self {
         match idx % 6 {
-            0 => PointShape::Circle,
-            1 => PointShape::Triangle,
-            2 => PointShape::Square,
-            3 => PointShape::Diamond,
-            4 => PointShape::Cross,
-            _ => PointShape::Star,
+            0 => PointShape::CircleFilled,
+            1 => PointShape::TriangleFilled,
+            2 => PointShape::CircleOutline,
+            3 => PointShape::Cross,
+            4 => PointShape::TriangleOutline,
+            _ => PointShape::Plus,
         }
     }
 }
@@ -335,30 +335,25 @@ fn draw_point<DB: DrawingBackend>(
     shape: PointShape,
 ) -> Result<(), DrawingAreaErrorKind<DB::ErrorType>> {
     match shape {
-        PointShape::Circle => {
+        PointShape::CircleFilled => {
             chart.draw_series(std::iter::once(Circle::new((x, y), size as u32, color.filled())))?;
         }
-        PointShape::Triangle => {
+        PointShape::TriangleFilled => {
             chart.draw_series(std::iter::once(TriangleMarker::new((x, y), size, color.filled())))?;
         }
-        PointShape::Square => {
-            // Draw a small square
-            chart.draw_series(std::iter::once(Rectangle::new(
-                [(x - 0.003 * x.max(1.0), y - 0.01 * y.max(1.0)),
-                 (x + 0.003 * x.max(1.0), y + 0.01 * y.max(1.0))],
-                color.filled(),
-            )))?;
+        PointShape::CircleOutline => {
+            chart.draw_series(std::iter::once(Circle::new((x, y), size as u32, color.stroke_width(2))))?;
         }
-        PointShape::Diamond => {
-            // Use cross marker rotated (diamond-ish)
-            chart.draw_series(std::iter::once(Cross::new((x, y), size, color.filled())))?;
+        PointShape::TriangleOutline => {
+            chart.draw_series(std::iter::once(TriangleMarker::new((x, y), size, color.stroke_width(2))))?;
         }
         PointShape::Cross => {
             chart.draw_series(std::iter::once(Cross::new((x, y), size, color.stroke_width(2))))?;
         }
-        PointShape::Star => {
-            // Approximate star with circle outline
-            chart.draw_series(std::iter::once(Circle::new((x, y), size as u32, color.stroke_width(2))))?;
+        PointShape::Plus => {
+            // Draw a plus sign using two lines would require different approach
+            // Use a smaller cross rotated - actually Cross is already an X, use it differently
+            chart.draw_series(std::iter::once(Cross::new((x, y), size + 1, color.stroke_width(1))))?;
         }
     }
     Ok(())
