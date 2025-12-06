@@ -165,10 +165,12 @@ fn draw_qq_impl<DB: DrawingBackend>(
 
     chart
         .configure_mesh()
+        .disable_mesh()
         .x_desc("Expected -log₁₀(p)")
         .y_desc("Observed -log₁₀(p)")
         .x_label_style(("sans-serif", 14).into_font().color(&config.theme.text))
         .y_label_style(("sans-serif", 14).into_font().color(&config.theme.text))
+        .axis_desc_style(("sans-serif", 18).into_font().color(&config.theme.text))
         .axis_style(&config.theme.axis)
         .draw()?;
 

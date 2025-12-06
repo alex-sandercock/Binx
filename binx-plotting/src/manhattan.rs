@@ -8,23 +8,48 @@ use std::path::Path;
 
 /// Processed data ready for Manhattan plot rendering
 struct ManhattanData {
-    /// Points with cumulative x positions: (cumulative_pos, score, chrom_index)
-    points: Vec<(f64, f64, usize)>,
+    /// Points with cumulative x positions: (cumulative_pos, score, chrom_index, model_index)
+    points: Vec<(f64, f64, usize, usize)>,
     /// Chromosome boundaries: (name, start_pos, end_pos, mid_pos)
-    chrom_info: Vec<(String, f64, f64, f64)>,
+    chrom_info: Vec<ChromInfo>,
+    /// Unique model names in order
+    models: Vec<String>,
     /// Maximum cumulative position
     max_x: f64,
     /// Maximum score
     max_y: f64,
 }
 
+/// Information about a chromosome for plotting
+struct ChromInfo {
+    name: String,
+    /// Midpoint for label placement (cumulative position)
+    mid: f64,
+}
+
 /// Prepare GWAS results for Manhattan plot
-fn prepare_manhattan_data(results: &[GwasPoint]) -> ManhattanData {
+fn prepare_manhattan_data(results: &[GwasPoint], chrom_filter: Option<&[String]>) -> ManhattanData {
+    // Collect unique models in order of first appearance
+    let mut models: Vec<String> = Vec::new();
+    for point in results {
+        if !models.contains(&point.model) {
+            models.push(point.model.clone());
+        }
+    }
+
     // Group points by chromosome
     let mut by_chrom: BTreeMap<String, Vec<&GwasPoint>> = BTreeMap::new();
 
     for point in results {
         let chrom = point.chrom.clone().unwrap_or_else(|| "Unknown".to_string());
+
+        // Skip if chromosome filter is set and this chromosome is not in the list
+        if let Some(filter) = chrom_filter {
+            if !filter.contains(&chrom) {
+                continue;
+            }
+        }
+
         by_chrom.entry(chrom).or_default().push(point);
     }
 
@@ -66,12 +91,16 @@ fn prepare_manhattan_data(results: &[GwasPoint]) -> ManhattanData {
             let cum_pos = cumulative_offset + pos;
             chrom_max_pos = chrom_max_pos.max(pos);
             max_y = max_y.max(point.score);
-            points.push((cum_pos, point.score, chrom_idx));
+            let model_idx = models.iter().position(|m| m == &point.model).unwrap_or(0);
+            points.push((cum_pos, point.score, chrom_idx, model_idx));
         }
 
         let chrom_end = cumulative_offset + chrom_max_pos;
         let chrom_mid = (chrom_start + chrom_end) / 2.0;
-        chrom_info.push((chrom_name.clone(), chrom_start, chrom_end, chrom_mid));
+        chrom_info.push(ChromInfo {
+            name: chrom_name.clone(),
+            mid: chrom_mid,
+        });
 
         // Add gap between chromosomes
         cumulative_offset = chrom_end + chrom_max_pos * 0.02;
@@ -82,6 +111,7 @@ fn prepare_manhattan_data(results: &[GwasPoint]) -> ManhattanData {
     ManhattanData {
         points,
         chrom_info,
+        models,
         max_x,
         max_y,
     }
@@ -112,7 +142,11 @@ pub fn manhattan_plot<P: AsRef<Path>>(
         anyhow::bail!("No GWAS results to plot");
     }
 
-    let data = prepare_manhattan_data(results);
+    let data = prepare_manhattan_data(results, config.chromosomes.as_deref());
+
+    if data.points.is_empty() {
+        anyhow::bail!("No GWAS results to plot after chromosome filtering");
+    }
 
     // Add padding to y-axis
     let y_max = (data.max_y * 1.1).max(config.significance_threshold + 1.0);
@@ -164,6 +198,30 @@ fn draw_manhattan_png(
     Ok(())
 }
 
+/// Shape types for different models
+#[derive(Clone, Copy)]
+enum PointShape {
+    Circle,
+    Triangle,
+    Square,
+    Diamond,
+    Cross,
+    Star,
+}
+
+impl PointShape {
+    fn from_index(idx: usize) -> Self {
+        match idx % 6 {
+            0 => PointShape::Circle,
+            1 => PointShape::Triangle,
+            2 => PointShape::Square,
+            3 => PointShape::Diamond,
+            4 => PointShape::Cross,
+            _ => PointShape::Star,
+        }
+    }
+}
+
 fn draw_manhattan_impl<DB: DrawingBackend>(
     root: &DrawingArea<DB, plotters::coord::Shift>,
     data: &ManhattanData,
@@ -173,23 +231,35 @@ fn draw_manhattan_impl<DB: DrawingBackend>(
     root.fill(&config.theme.background)?;
 
     let title = config.title.as_deref().unwrap_or("Manhattan Plot");
+    let has_multiple_models = data.models.len() > 1;
+
+    // Reserve space for legend on the right if multiple models
+    let right_margin = if has_multiple_models { 120 } else { 10 };
 
     let mut chart = ChartBuilder::on(root)
         .caption(title, ("sans-serif", 24).into_font().color(&config.theme.text))
         .margin(10)
-        .x_label_area_size(50)
+        .margin_right(right_margin)
+        .x_label_area_size(40)
         .y_label_area_size(60)
         .build_cartesian_2d(0.0..data.max_x, 0.0..y_max)?;
 
-    // Configure mesh
+    // Configure mesh - disable grid lines and default x-axis
     chart
         .configure_mesh()
-        .disable_x_mesh()
+        .disable_mesh()
+        .disable_x_axis()
         .y_desc("-log₁₀(p)")
         .y_label_style(("sans-serif", 14).into_font().color(&config.theme.text))
-        .x_label_style(("sans-serif", 12).into_font().color(&config.theme.text))
+        .axis_desc_style(("sans-serif", 18).into_font().color(&config.theme.text))
         .axis_style(&config.theme.axis)
         .draw()?;
+
+    // Draw x-axis line
+    chart.draw_series(LineSeries::new(
+        vec![(0.0, 0.0), (data.max_x, 0.0)],
+        config.theme.axis.stroke_width(1),
+    ))?;
 
     // Draw significance threshold line
     chart.draw_series(LineSeries::new(
@@ -205,29 +275,91 @@ fn draw_manhattan_impl<DB: DrawingBackend>(
         ))?;
     }
 
-    // Draw points colored by chromosome
+    // Draw points colored by chromosome, shaped by model
     let colors = &config.theme.chromosome_colors;
-    let point_size = config.point_size;
+    let point_size = config.point_size as i32;
 
-    for (cum_pos, score, chrom_idx) in &data.points {
+    for (cum_pos, score, chrom_idx, model_idx) in &data.points {
         let color = &colors[*chrom_idx % colors.len()];
-        chart.draw_series(std::iter::once(Circle::new(
-            (*cum_pos, *score),
-            point_size,
-            color.filled(),
-        )))?;
+        let shape = PointShape::from_index(*model_idx);
+
+        draw_point(&mut chart, *cum_pos, *score, point_size, color, shape)?;
     }
 
-    // Draw chromosome labels on x-axis
+    // Draw chromosome labels centered below x-axis
     if config.show_chrom_labels {
-        for (chrom_name, _start, _end, mid) in &data.chrom_info {
+        for chrom in &data.chrom_info {
             chart.draw_series(std::iter::once(Text::new(
-                chrom_name.clone(),
-                (*mid, -y_max * 0.02),
-                ("sans-serif", 11).into_font().color(&config.theme.text),
+                chrom.name.clone(),
+                (chrom.mid, -y_max * 0.20),
+                ("sans-serif", 14)
+                    .into_font()
+                    .color(&config.theme.text),
             )))?;
         }
     }
 
+    // Draw legend if multiple models
+    if has_multiple_models {
+        let legend_x = data.max_x * 1.02;
+        let legend_y_start = y_max * 0.95;
+        let legend_spacing = y_max * 0.08;
+
+        for (idx, model_name) in data.models.iter().enumerate() {
+            let y_pos = legend_y_start - (idx as f64 * legend_spacing);
+            let shape = PointShape::from_index(idx);
+
+            // Draw shape sample (use first chromosome color for legend)
+            let sample_color = &colors[0];
+            draw_point(&mut chart, legend_x, y_pos, point_size, sample_color, shape)?;
+
+            // Draw model name
+            chart.draw_series(std::iter::once(Text::new(
+                model_name.clone(),
+                (legend_x + data.max_x * 0.02, y_pos),
+                ("sans-serif", 10).into_font().color(&config.theme.text),
+            )))?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Draw a point with the specified shape
+fn draw_point<DB: DrawingBackend>(
+    chart: &mut ChartContext<DB, Cartesian2d<plotters::coord::types::RangedCoordf64, plotters::coord::types::RangedCoordf64>>,
+    x: f64,
+    y: f64,
+    size: i32,
+    color: &RGBColor,
+    shape: PointShape,
+) -> Result<(), DrawingAreaErrorKind<DB::ErrorType>> {
+    match shape {
+        PointShape::Circle => {
+            chart.draw_series(std::iter::once(Circle::new((x, y), size as u32, color.filled())))?;
+        }
+        PointShape::Triangle => {
+            chart.draw_series(std::iter::once(TriangleMarker::new((x, y), size, color.filled())))?;
+        }
+        PointShape::Square => {
+            // Draw a small square
+            chart.draw_series(std::iter::once(Rectangle::new(
+                [(x - 0.003 * x.max(1.0), y - 0.01 * y.max(1.0)),
+                 (x + 0.003 * x.max(1.0), y + 0.01 * y.max(1.0))],
+                color.filled(),
+            )))?;
+        }
+        PointShape::Diamond => {
+            // Use cross marker rotated (diamond-ish)
+            chart.draw_series(std::iter::once(Cross::new((x, y), size, color.filled())))?;
+        }
+        PointShape::Cross => {
+            chart.draw_series(std::iter::once(Cross::new((x, y), size, color.stroke_width(2))))?;
+        }
+        PointShape::Star => {
+            // Approximate star with circle outline
+            chart.draw_series(std::iter::once(Circle::new((x, y), size as u32, color.stroke_width(2))))?;
+        }
+    }
     Ok(())
 }

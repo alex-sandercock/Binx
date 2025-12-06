@@ -246,6 +246,10 @@ enum Commands {
         /// Plot height in pixels
         #[arg(long, default_value = "600")]
         height: u32,
+
+        /// Filter to specific chromosomes (comma-separated, e.g., "1,2,3" or "chr1,chr2")
+        #[arg(long)]
+        chromosomes: Option<String>,
     },
 }
 
@@ -478,8 +482,9 @@ fn main() -> Result<()> {
             theme,
             width,
             height,
+            chromosomes,
         } => {
-            run_plot(&input, &output, &plot_type, model.as_deref(), threshold, suggestive, title, &theme, width, height)?;
+            run_plot(&input, &output, &plot_type, model.as_deref(), threshold, suggestive, title, &theme, width, height, chromosomes.as_deref())?;
         }
     }
 
@@ -694,6 +699,7 @@ fn run_plot(
     theme_name: &str,
     width: u32,
     height: u32,
+    chromosomes: Option<&str>,
 ) -> Result<()> {
     use binx_plotting::{manhattan_plot, qq_plot, PlotConfig, load_gwas_results, filter_by_model, themes::Theme};
 
@@ -710,6 +716,18 @@ fn run_plot(
 
     if results.is_empty() {
         anyhow::bail!("No results to plot after filtering");
+    }
+
+    // Parse chromosome filter
+    let chrom_filter: Option<Vec<String>> = chromosomes.map(|c| {
+        c.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    });
+
+    if let Some(ref chroms) = chrom_filter {
+        eprintln!("Filtering to chromosomes: {:?}", chroms);
     }
 
     // Parse theme
@@ -735,6 +753,7 @@ fn run_plot(
         theme,
         point_size: 3,
         show_chrom_labels: true,
+        chromosomes: chrom_filter,
     };
 
     // Generate plot

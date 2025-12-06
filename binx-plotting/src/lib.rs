@@ -65,6 +65,8 @@ pub struct PlotConfig {
     pub point_size: u32,
     /// Show chromosome labels on x-axis
     pub show_chrom_labels: bool,
+    /// Filter to specific chromosomes (None = show all)
+    pub chromosomes: Option<Vec<String>>,
 }
 
 impl Default for PlotConfig {
@@ -78,6 +80,7 @@ impl Default for PlotConfig {
             theme: themes::Theme::default(),
             point_size: 3,
             show_chrom_labels: true,
+            chromosomes: None,
         }
     }
 }
@@ -113,6 +116,38 @@ pub fn get_models(results: &[GwasPoint]) -> Vec<String> {
     models.sort();
     models.dedup();
     models
+}
+
+/// Get unique chromosomes present in the results
+pub fn get_chromosomes(results: &[GwasPoint]) -> Vec<String> {
+    let mut chroms: Vec<String> = results
+        .iter()
+        .filter_map(|p| p.chrom.clone())
+        .collect();
+    chroms.sort_by(|a, b| {
+        // Natural sort: numeric chromosomes first, then alphabetic
+        let a_num: Option<u32> = a.trim_start_matches(|c: char| !c.is_numeric()).parse().ok();
+        let b_num: Option<u32> = b.trim_start_matches(|c: char| !c.is_numeric()).parse().ok();
+        match (a_num, b_num) {
+            (Some(an), Some(bn)) => an.cmp(&bn),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.cmp(b),
+        }
+    });
+    chroms.dedup();
+    chroms
+}
+
+/// Filter results to specific chromosomes
+pub fn filter_by_chromosomes(results: &[GwasPoint], chromosomes: &[String]) -> Vec<GwasPoint> {
+    results
+        .iter()
+        .filter(|p| {
+            p.chrom.as_ref().map_or(false, |c| chromosomes.contains(c))
+        })
+        .cloned()
+        .collect()
 }
 
 // Re-export main functions
