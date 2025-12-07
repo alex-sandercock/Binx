@@ -1,4 +1,4 @@
-//! Faithful Rust implementation of R/rrBLUP::kin.blup
+//! Rust implementation of R/rrBLUP::kin.blup
 //!
 //! This module provides a direct translation of the kin.blup function from
 //! the R/rrBLUP package. The implementation follows the original R code structure
@@ -75,7 +75,7 @@ pub struct KinBlupResult {
 
 /// Genomic prediction using kinship-based BLUP
 ///
-/// This is a faithful Rust implementation of R/rrBLUP::kin.blup().
+/// This is a Rust implementation of R/rrBLUP::kin.blup().
 ///
 /// # Arguments
 /// * `data` - Input data containing genotype IDs, phenotypes, and optional effects

@@ -1,4 +1,4 @@
-//! Faithful Rust implementation of R/rrBLUP::mixed.solve
+//! Rust implementation of R/rrBLUP::mixed.solve
 //!
 //! This module provides a direct translation of the mixed.solve function from
 //! the R/rrBLUP package. The implementation follows the original R code structure
@@ -72,7 +72,7 @@ pub struct MixedSolveResult {
 
 /// Solve mixed model y = Xβ + Zu + e using spectral decomposition
 ///
-/// This is a faithful Rust implementation of R/rrBLUP::mixed.solve().
+/// This is a Rust implementation of R/rrBLUP::mixed.solve().
 ///
 /// # Arguments
 /// * `y` - Response vector (n x 1), may contain NaN for missing values

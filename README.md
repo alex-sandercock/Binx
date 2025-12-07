@@ -6,12 +6,25 @@ Rust command-line genomics workbench for diploid and polyploid species. `binx` t
 ## Highlights
 
 - **GWASpoly-style GWAS** (`binx gwaspoly`) with eight genetic models for polyploids, validated against R/GWASpoly
-- **Accurate mixed model fitting** via rrblup-rs, a faithful Rust implementation of R/rrBLUP's `mixed.solve`
+- **Accurate mixed model fitting** via rrblup-rs, a Rust implementation of R/rrBLUP's `mixed.solve`
 - **Genotype dosage estimation** (`binx dosage`) from VCF or read count data using updog-style algorithms
 - **Kinship matrix computation** (`binx kinship`) via VanRaden or GWASpoly methods
 - **VCF conversion** (`binx convert`) to Binx two-line CSV format
 - Polyploid-aware: supports ploidy levels 2, 4, 6, etc.
 - Handles repeated phenotype IDs (multi-environment trials) and LOCO (Leave-One-Chromosome-Out)
+
+## TODO
+- Fix GWASpoly LOCO (results not matching R/GWASpoly LOCO)
+- Fix GWASpoly handling of covariates (default seems to already account for them?)
+- Fix the faer implementations in rrblup-rs mixed_solve_fast
+- Construct <code style="color : red">fastgwas</code> which would be a much faster polyploid GWAS, with slight accuracy loss.
+- Frame out <code style="color : red">multigwas</code> which would support multiallelic loci in a GWAS
+- Draft mdbooks pages and deploy to readthedocs or github pages
+- Clean up/Update documentation and comments within codebase
+- Upload package to crates.io
+- Ensure licenses are updated and references to GWASpoly, Updog, and rrBLUP are present
+- Comprehensive benchmarking against R (<code style="color : red">and python rrBLUP</code>) implementations
+- Upload to homebrew?
 
 ## Installation
 
@@ -112,13 +125,16 @@ Estimate genotype dosages from sequencing read counts.
 - `--verbose` — Show progress
 
 ### binx convert
-Convert VCF (with AD field) to Binx two-line CSV format.
+Convert VCF to other formats.
 
 **Required:**
 - `--vcf <file>` — Input VCF file (plain or gzipped)
-- `--output <file>` — Output CSV path
+- `--output <file>` — Output path
 
 **Optional:**
+- `--format <fmt>` — Output format (default: `csv`):
+  - `csv` — Two-line format with ref/total counts from AD field
+  - `gwaspoly` — GWASpoly genotype format with dosages from GT field
 - `--verbose` — Show progress
 
 ### binx multigwas

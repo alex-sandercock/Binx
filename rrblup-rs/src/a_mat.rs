@@ -1,4 +1,4 @@
-//! Faithful Rust implementation of R/rrBLUP::A.mat
+//! Rust implementation of R/rrBLUP::A.mat
 //!
 //! This module provides a direct translation of the A.mat function from
 //! the R/rrBLUP package. The implementation follows the original R code structure
@@ -95,7 +95,7 @@ pub struct AMatResult {
 
 /// Compute additive relationship matrix from marker data
 ///
-/// This is a faithful Rust implementation of R/rrBLUP::A.mat().
+/// This is a Rust implementation of R/rrBLUP::A.mat().
 ///
 /// # Arguments
 /// * `x` - Genotype matrix (n individuals x m markers) with values in {-1, 0, 1}

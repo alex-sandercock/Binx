@@ -42,7 +42,9 @@ parse_args <- function() {
     delim = "",
     min_maf = NA,
     max_missing = NA,
-    kinship_out = NULL
+    kinship_out = NULL,
+    n_core = 1,
+    loco = FALSE
   )
   for (a in raw) {
     if (!grepl("^--", a)) next
@@ -63,6 +65,8 @@ parse_args <- function() {
   }
   args$ploidy <- as.integer(args$ploidy)
   args$n_traits <- as.integer(args$n_traits)
+  args$n_core <- as.integer(args$n_core)
+  args$loco <- as.logical(args$loco)
   if (!is.na(args$min_maf)) args$min_maf <- as.numeric(args$min_maf)
   if (!is.na(args$max_missing)) args$max_missing <- as.numeric(args$max_missing)
   args
@@ -96,10 +100,10 @@ main <- function() {
   # Compute or load kinship
   if (!is.null(args$kinship) && args$kinship != "") {
     message("Using provided kinship: ", args$kinship)
-    gwas <- set.K.from.file(gwas, args$kinship, LOCO = FALSE)
+    gwas <- set.K.from.file(gwas, args$kinship, LOCO = args$loco)
   } else {
-    message("Computing kinship via set.K")
-    gwas <- set.K(gwas, LOCO = FALSE)
+    message("Computing kinship via set.K (LOCO=", args$loco, ")")
+    gwas <- set.K(gwas, LOCO = args$loco)
   }
 
   # Optionally write kinship matrix to file for reuse in parity tests
@@ -136,8 +140,8 @@ main <- function() {
     params$max.missing <- args$max_missing
   }
 
-  message("Running GWASpoly for models: ", paste(models, collapse = ", "))
-  gwas <- GWASpoly(gwas, models = models, traits = args$trait, params = params)
+  message("Running GWASpoly for models: ", paste(models, collapse = ", "), " (n.core=", args$n_core, ")")
+  gwas <- GWASpoly(gwas, models = models, traits = args$trait, params = params, n.core = args$n_core)
 
   dir.create(dirname(args$out), showWarnings = FALSE, recursive = TRUE)
 

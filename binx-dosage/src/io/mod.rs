@@ -47,8 +47,16 @@ pub struct VcfRecordCounts {
     pub alt_allele: Arc<String>,
 }
 
+/// VCF record with GT-derived dosages (count of alt alleles).
+pub struct VcfRecordDosage {
+    pub id: String,
+    pub dosages: Vec<Option<u8>>,
+    pub chrom: Arc<String>,
+    pub pos: u64,
+}
+
 pub use matrix::{parse_ref_total_matrices, parse_two_line_csv};
-pub use vcf::{count_vcf_records, stream_vcf_records};
+pub use vcf::{count_vcf_records, stream_vcf_records, stream_vcf_gt_dosages};
 
 #[cfg(feature = "bcf")]
 pub use bcf::stream_bcf_records;
