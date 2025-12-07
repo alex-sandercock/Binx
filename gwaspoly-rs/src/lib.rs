@@ -51,6 +51,9 @@ pub mod parallel;
 // Threshold calculation module (set.threshold implementation)
 pub mod threshold;
 
+// QTL detection module (get.QTL implementation)
+pub mod qtl;
+
 // Re-export main types and functions from gwaspoly
 pub use gwaspoly::{
     GwasCache,
@@ -68,4 +71,12 @@ pub use threshold::{
     calculate_thresholds_simple,
     load_gwas_results_for_threshold,
     print_thresholds,
+};
+
+// Re-export QTL types and functions
+pub use qtl::{
+    QtlResult,
+    get_qtl,
+    get_qtl_from_file,
+    write_qtl_results,
 };

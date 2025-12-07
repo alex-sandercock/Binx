@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::cell::RefCell;
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufRead, BufWriter, Write};
 use std::time::Instant;
 
 /// binx: a Rust-based genomic analysis toolkit
@@ -234,6 +234,21 @@ enum Commands {
         /// Enable verbose progress output
         #[arg(long, default_value_t = false)]
         verbose: bool,
+    },
+
+    /// Identify significant QTLs from GWAS results
+    Qtl {
+        /// Input GWAS results file (or stdin if not specified)
+        #[arg(long)]
+        input: Option<String>,
+
+        /// Window size in bp for pruning nearby signals (keeps most significant)
+        #[arg(long)]
+        bp_window: Option<u64>,
+
+        /// Output file path (default: stdout)
+        #[arg(long)]
+        output: Option<String>,
     },
 
     /// Generate GWAS plots (Manhattan, QQ) from results
@@ -547,6 +562,9 @@ fn main() -> Result<()> {
                 }
             }
         }
+        Commands::Qtl { input, bp_window, output } => {
+            run_qtl(input.as_deref(), bp_window, output.as_deref())?;
+        }
         Commands::Plot {
             input,
             output,
@@ -762,6 +780,134 @@ fn convert_vcf_to_gwaspoly(vcf_path: &str, output_path: &str, verbose: bool) -> 
         eprintln!("\nWrote {} loci to {}", count, output_path);
     }
     Ok(())
+}
+
+fn run_qtl(input: Option<&str>, bp_window: Option<u64>, output: Option<&str>) -> Result<()> {
+    use std::io::{stdin, BufReader};
+
+    // Load results from file or stdin
+    let results = if let Some(path) = input {
+        eprintln!("Loading GWAS results from {}...", path);
+        gwaspoly_rs::get_qtl_from_file(path, bp_window)?
+    } else {
+        // Read from stdin
+        eprintln!("Reading GWAS results from stdin...");
+        let stdin = stdin();
+        let reader = BufReader::new(stdin.lock());
+        let results = load_marker_results_from_reader(reader)?;
+        eprintln!("Loaded {} results", results.len());
+        gwaspoly_rs::get_qtl(&results, bp_window)?
+    };
+
+    eprintln!("Found {} significant QTLs", results.len());
+
+    // Write output
+    if let Some(path) = output {
+        gwaspoly_rs::write_qtl_results(&results, path)?;
+        eprintln!("QTL results written to {}", path);
+    } else {
+        // Write to stdout
+        println!("marker_id,chrom,pos,model,score,effect,threshold");
+        for qtl in &results {
+            let effect_str = qtl.effect.map(|e| format!("{:.6}", e)).unwrap_or_else(|| "NA".to_string());
+            println!(
+                "{},{},{:.0},{},{:.4},{},{}",
+                qtl.marker_id,
+                qtl.chrom,
+                qtl.pos,
+                qtl.model,
+                qtl.score,
+                effect_str,
+                qtl.threshold
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn load_marker_results_from_reader<R: BufRead>(reader: R) -> Result<Vec<gwaspoly_rs::MarkerResult>> {
+    let mut results = Vec::new();
+    let mut lines = reader.lines();
+
+    // Parse header
+    let header = lines
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Empty input"))??;
+    let columns: Vec<&str> = header.split(',').map(|s| s.trim()).collect();
+
+    // Find column indices
+    let find_col = |name: &str| -> Option<usize> {
+        columns.iter().position(|&c| c == name)
+    };
+
+    let idx_marker = find_col("marker_id").ok_or_else(|| anyhow::anyhow!("Missing marker_id column"))?;
+    let idx_chrom = find_col("chrom");
+    let idx_pos = find_col("pos");
+    let idx_model = find_col("model").ok_or_else(|| anyhow::anyhow!("Missing model column"))?;
+    let idx_score = find_col("score").ok_or_else(|| anyhow::anyhow!("Missing score column"))?;
+    let idx_pvalue = find_col("p_value");
+    let idx_effect = find_col("effect");
+    let idx_nobs = find_col("n_obs");
+    let idx_threshold = find_col("threshold");
+
+    for line in lines {
+        let line = line?;
+        let fields: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
+
+        if fields.len() <= idx_marker {
+            continue;
+        }
+
+        let parse_optional_f64 = |idx: Option<usize>| -> Option<f64> {
+            idx.and_then(|i| fields.get(i))
+                .and_then(|s| {
+                    if *s == "NA" || s.is_empty() {
+                        None
+                    } else {
+                        s.parse().ok()
+                    }
+                })
+        };
+
+        let parse_optional_str = |idx: Option<usize>| -> Option<String> {
+            idx.and_then(|i| fields.get(i))
+                .and_then(|s| {
+                    if *s == "NA" || s.is_empty() {
+                        None
+                    } else {
+                        Some(s.to_string())
+                    }
+                })
+        };
+
+        let score = fields.get(idx_score)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
+
+        let p_value = parse_optional_f64(idx_pvalue).unwrap_or_else(|| {
+            10_f64.powf(-score)
+        });
+
+        let n_obs = idx_nobs
+            .and_then(|i| fields.get(i))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        results.push(gwaspoly_rs::MarkerResult {
+            marker_id: fields[idx_marker].to_string(),
+            chrom: parse_optional_str(idx_chrom),
+            pos: parse_optional_f64(idx_pos),
+            model: fields[idx_model].to_string(),
+            score,
+            p_value,
+            effect: parse_optional_f64(idx_effect),
+            n_obs,
+            threshold: parse_optional_f64(idx_threshold),
+        });
+    }
+
+    Ok(results)
 }
 
 fn run_plot(
