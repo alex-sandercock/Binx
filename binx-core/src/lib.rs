@@ -73,7 +73,7 @@ pub struct MixedModelCache {
 
 /// Fit null mixed model using rrBLUP::mixed.solve algorithm.
 ///
-/// This is a faithful Rust implementation of R/rrBLUP's mixed.solve function.
+/// This is a Rust implementation of R/rrBLUP's mixed.solve function.
 /// Uses the cholesky branch when n > m + p, otherwise the eigen branch.
 /// Uses faer for full SVD (Mat::svd gives full U matrix).
 pub fn fit_null_mixed_model(

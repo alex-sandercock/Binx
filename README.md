@@ -6,7 +6,7 @@ Rust command-line genomics workbench for diploid and polyploid species. `binx` t
 ## Highlights
 
 - **GWASpoly-style GWAS** (`binx gwaspoly`) with eight genetic models for polyploids, validated against R/GWASpoly
-- **Accurate mixed model fitting** via rrblup-rs, a faithful Rust implementation of R/rrBLUP's `mixed.solve`
+- **Accurate mixed model fitting** via rrblup-rs, a Rust implementation of R/rrBLUP's `mixed.solve`
 - **Genotype dosage estimation** (`binx dosage`) from VCF or read count data using updog-style algorithms
 - **Kinship matrix computation** (`binx kinship`) via VanRaden or GWASpoly methods
 - **VCF conversion** (`binx convert`) to Binx two-line CSV format

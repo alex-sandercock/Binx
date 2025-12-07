@@ -1,6 +1,6 @@
 //! gwaspoly.rs: Main GWASpoly function implementation
 //!
-//! This module provides a faithful Rust implementation of R/GWASpoly's GWASpoly() function
+//! This module provides a Rust implementation of R/GWASpoly's GWASpoly() function
 //! for genome-wide association studies in polyploid organisms.
 //!
 //! ## Features
@@ -124,7 +124,7 @@ pub struct MarkerResult {
 
 /// Fit null mixed model using the validated rrblup-rs mixed_solve implementation.
 ///
-/// This wraps rrblup_rs::mixed_solve_new (faithful R/rrBLUP::mixed.solve implementation)
+/// This wraps rrblup_rs::mixed_solve_new (Rust implementation of R/rrBLUP::mixed.solve)
 /// for use in GWAS marker testing.
 pub(crate) fn fit_null_model(
     y: &Array1<f64>,
@@ -184,7 +184,7 @@ pub(crate) fn fit_null_model(
 
 /// Main GWASpoly analysis function
 ///
-/// This function faithfully implements R/GWASpoly's approach:
+/// This function implements R/GWASpoly's approach:
 /// - Supports repeated observations per genotype (multi-environment trials)
 /// - Uses Z incidence matrix to map observations to genotypes
 /// - Fixed effects (like environment) are included in the model, not filtered

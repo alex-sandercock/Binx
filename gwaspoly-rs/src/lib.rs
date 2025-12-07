@@ -1,6 +1,6 @@
 //! gwaspoly-rs: Rust implementation of R/GWASpoly package
 //!
-//! This crate provides a faithful implementation of the GWASpoly package for
+//! This crate provides a Rust implementation of the GWASpoly package for
 //! genome-wide association studies in polyploid organisms.
 //!
 //! ## Features
@@ -13,7 +13,7 @@
 //!
 //! ## Module Organization
 //! - `gwaspoly`: Main GWASpoly function and types (GwasCache, GeneActionModel, MarkerResult)
-//! - `set_k`: Kinship matrix computation (faithful implementation of R/GWASpoly set.K)
+//! - `set_k`: Kinship matrix computation (Rust implementation of R/GWASpoly set.K)
 //! - `parallel`: Parallel marker testing using rayon
 //!
 //! ## Example

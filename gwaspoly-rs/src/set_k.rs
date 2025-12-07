@@ -1,4 +1,4 @@
-//! set_k.rs: Faithful implementation of R/GWASpoly's set.K function
+//! set_k.rs: Rust implementation of R/GWASpoly's set.K function
 //!
 //! This module computes kinship matrices for the polygenic effect in GWAS.
 //!

@@ -1,6 +1,6 @@
 //! rrblup-rs: Rust implementation of R/rrBLUP package
 //!
-//! This crate provides a faithful implementation of the core functionality from the
+//! This crate provides a Rust implementation of the core functionality from the
 //! R/rrBLUP package for mixed model analysis, including:
 //! - `a_mat()`: Additive relationship matrix from markers
 //! - `mixed_solve()`: REML-based mixed model solver using spectral decomposition
@@ -157,7 +157,7 @@ pub fn a_mat_from_dosages(
 
 /// Solve mixed model y = Xb + Zu + e using REML spectral decomposition.
 ///
-/// This is a faithful Rust implementation of R/rrBLUP::mixed.solve().
+/// This is a Rust implementation of R/rrBLUP::mixed.solve().
 ///
 /// # Arguments
 /// * `y` - Response vector (n x 1)
