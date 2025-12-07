@@ -42,82 +42,113 @@ enum Commands {
     },
 
     /// GWASpoly-style GWAS for polyploids with multiple genetic models
+    #[command(after_help = "EXAMPLES:
+    # Basic GWAS with additive model
+    binx gwaspoly --geno geno.tsv --pheno pheno.csv --trait_name yield --ploidy 4 --out results.csv
+
+    # Multiple models with threshold calculation
+    binx gwaspoly --geno geno.tsv --pheno pheno.csv --trait_name yield --ploidy 4 \\
+        --models additive,general --threshold m.eff --out results.csv
+
+    # With kinship matrix and plots
+    binx gwaspoly --geno geno.tsv --pheno pheno.csv --trait_name yield --ploidy 4 \\
+        --kinship kinship.tsv --plot both --out results.csv
+
+    # Filter by environment
+    binx gwaspoly --geno geno.tsv --pheno pheno.csv --trait_name yield --ploidy 4 \\
+        --env-column location --env-value field_A --out results.csv
+
+MODELS:
+    additive        Linear effect of allele dosage
+    general         Separate effect for each dosage class
+    1-dom-ref       Single-dose dominance (reference)
+    1-dom-alt       Single-dose dominance (alternate)
+    2-dom-ref       Double-dose dominance (reference)
+    2-dom-alt       Double-dose dominance (alternate)
+    diplo-general   Diploidized general
+    diplo-additive  Diploidized additive")]
     Gwaspoly {
-        /// Genotype dosage file (biallelic; markers x samples with chr/pos)
-        #[arg(long)]
+        // === Input/Output ===
+        /// Genotype dosage file (TSV: marker, chr, pos, samples...)
+        #[arg(long, help_heading = "Input/Output")]
         geno: String,
 
-        /// Phenotype file (sample_id + traits)
-        #[arg(long)]
+        /// Phenotype file (CSV: sample_id, traits...)
+        #[arg(long, help_heading = "Input/Output")]
         pheno: String,
 
-        /// Trait name to analyze
-        #[arg(long)]
-        trait_name: String,
-
-        /// Comma-separated covariate names from phenotype file
-        #[arg(long)]
-        covariates: Option<String>,
-
-        /// Optional kinship matrix TSV (sample_id + samples)
-        #[arg(long)]
-        kinship: Option<String>,
-
-        /// Allow dropping genotype samples that lack phenotypes
-        #[arg(long, default_value_t = false)]
-        allow_missing_samples: bool,
-
-        /// Optional environment column name to filter phenotype rows
-        #[arg(long)]
-        env_column: Option<String>,
-
-        /// Environment value to keep (used with --env-column)
-        #[arg(long)]
-        env_value: Option<String>,
-
-        /// Ploidy (e.g., 2, 4, 6)
-        #[arg(long)]
-        ploidy: u8,
-
-        /// Comma-separated gene action models (additive,general,1-dom-ref,1-dom-alt,2-dom-ref,2-dom-alt,diplo-general,diplo-additive)
-        #[arg(long, default_value = "additive,general")]
-        models: String,
-
-        /// Use LOCO (Leave-One-Chromosome-Out) kinship matrices
-        #[arg(long, default_value_t = false)]
-        loco: bool,
-
-        /// Minimum minor allele frequency (0.0-0.5)
-        #[arg(long, default_value = "0.0")]
-        min_maf: f64,
-
-        /// Maximum genotype frequency for QC (0.0-1.0, 0 for auto)
-        #[arg(long, default_value = "0.0")]
-        max_geno_freq: f64,
-
         /// Output results CSV
-        #[arg(long)]
+        #[arg(long, help_heading = "Input/Output")]
         out: String,
 
-        /// Use parallel marker testing (experimental)
-        #[arg(long, default_value_t = false)]
-        parallel: bool,
+        /// Optional kinship matrix TSV
+        #[arg(long, help_heading = "Input/Output")]
+        kinship: Option<String>,
 
-        /// Generate plots after GWAS (manhattan, qq, or both)
-        #[arg(long)]
-        plot: Option<String>,
+        // === Analysis ===
+        /// Trait name to analyze
+        #[arg(long, help_heading = "Analysis")]
+        trait_name: String,
 
-        /// Output path for plots (default: <out>.manhattan.svg, <out>.qq.svg)
-        #[arg(long)]
-        plot_output: Option<String>,
+        /// Ploidy level (e.g., 2, 4, 6)
+        #[arg(long, help_heading = "Analysis")]
+        ploidy: u8,
 
-        /// Threshold calculation method (bonferroni, m.eff, or fdr)
-        #[arg(long)]
+        /// Gene action models (comma-separated)
+        #[arg(long, default_value = "additive,general", help_heading = "Analysis")]
+        models: String,
+
+        /// Use LOCO (Leave-One-Chromosome-Out)
+        #[arg(long, default_value_t = false, help_heading = "Analysis")]
+        loco: bool,
+
+        /// Covariates from phenotype file (comma-separated)
+        #[arg(long, help_heading = "Analysis")]
+        covariates: Option<String>,
+
+        // === QC Filters ===
+        /// Minimum minor allele frequency (0.0-0.5)
+        #[arg(long, default_value = "0.0", help_heading = "QC Filters")]
+        min_maf: f64,
+
+        /// Maximum genotype frequency (0.0-1.0, 0=auto)
+        #[arg(long, default_value = "0.0", help_heading = "QC Filters")]
+        max_geno_freq: f64,
+
+        /// Allow samples in geno but not in pheno
+        #[arg(long, default_value_t = false, help_heading = "QC Filters")]
+        allow_missing_samples: bool,
+
+        // === Environment ===
+        /// Column name to filter phenotype rows
+        #[arg(long, help_heading = "Environment")]
+        env_column: Option<String>,
+
+        /// Value to keep (used with --env-column)
+        #[arg(long, help_heading = "Environment")]
+        env_value: Option<String>,
+
+        // === Threshold ===
+        /// Method: bonferroni, m.eff, or fdr
+        #[arg(long, help_heading = "Threshold")]
         threshold: Option<String>,
 
-        /// Significance level for threshold calculation (default: 0.05)
-        #[arg(long, default_value = "0.05")]
+        /// Significance level (default: 0.05)
+        #[arg(long, default_value = "0.05", help_heading = "Threshold")]
         alpha: f64,
+
+        // === Output Options ===
+        /// Generate plots: manhattan, qq, or both
+        #[arg(long, help_heading = "Output Options")]
+        plot: Option<String>,
+
+        /// Custom path for plot files
+        #[arg(long, help_heading = "Output Options")]
+        plot_output: Option<String>,
+
+        /// Use parallel marker testing
+        #[arg(long, default_value_t = false, help_heading = "Output Options")]
+        parallel: bool,
     },
 
     /// Compute kinship matrix from biallelic dosages
@@ -140,24 +171,38 @@ enum Commands {
     },
 
     /// Calculate significance thresholds for GWAS results
+    #[command(after_help = "EXAMPLES:
+    # Bonferroni correction
+    binx threshold --results gwas.csv --method bonferroni
+
+    # M.eff (effective number of tests) - requires genotype data
+    binx threshold --results gwas.csv --method m.eff --geno geno.tsv --ploidy 4
+
+    # FDR (Benjamini-Hochberg)
+    binx threshold --results gwas.csv --method fdr --alpha 0.1
+
+METHODS:
+    bonferroni  Simple Bonferroni: -log10(alpha / n_markers)
+    m.eff       Effective tests (Moskvina & Schmidt 2008), accounts for LD
+    fdr         False Discovery Rate (Benjamini-Hochberg)")]
     Threshold {
-        /// GWAS results CSV file (output from gwaspoly command)
+        /// GWAS results CSV file
         #[arg(long)]
         results: String,
 
-        /// Threshold method: bonferroni, m.eff, or fdr
-        #[arg(long)]
+        /// Threshold method
+        #[arg(long, value_parser = ["bonferroni", "m.eff", "fdr"])]
         method: String,
 
-        /// Significance level (default: 0.05)
+        /// Significance level
         #[arg(long, default_value = "0.05")]
         alpha: f64,
 
-        /// Genotype dosage file (required for m.eff method)
+        /// Genotype file (required for m.eff)
         #[arg(long)]
         geno: Option<String>,
 
-        /// Ploidy (required for m.eff method)
+        /// Ploidy (required for m.eff)
         #[arg(long)]
         ploidy: Option<u8>,
     },
@@ -237,65 +282,113 @@ enum Commands {
     },
 
     /// Identify significant QTLs from GWAS results
+    #[command(after_help = "EXAMPLES:
+    # Extract QTLs from GWAS results
+    binx qtl --input gwas_results.csv --output qtls.csv
+
+    # Prune nearby signals within 1 Mb window
+    binx qtl --input gwas_results.csv --bp-window 1000000
+
+    # Pipe from gwaspoly (requires threshold in results)
+    binx gwaspoly ... --threshold m.eff --out /dev/stdout 2>/dev/null | binx qtl --bp-window 1000000
+
+NOTE: Input must have 'threshold' column (use --threshold with gwaspoly).
+      Only markers with score >= threshold are reported as QTLs.")]
     Qtl {
-        /// Input GWAS results file (or stdin if not specified)
+        /// Input GWAS results file (stdin if omitted)
         #[arg(long)]
         input: Option<String>,
 
-        /// Window size in bp for pruning nearby signals (keeps most significant)
+        /// Prune signals within this window (bp)
         #[arg(long)]
         bp_window: Option<u64>,
 
-        /// Output file path (default: stdout)
+        /// Output file (stdout if omitted)
         #[arg(long)]
         output: Option<String>,
     },
 
-    /// Generate GWAS plots (Manhattan, QQ) from results
+    /// Generate GWAS plots (Manhattan, QQ, LD) from results
+    #[command(after_help = "EXAMPLES:
+    # Manhattan plot from GWAS results
+    binx plot --input gwas.csv --output manhattan.svg
+
+    # QQ plot for a specific model
+    binx plot --input gwas.csv --output qq.svg --plot-type qq --model additive
+
+    # LD decay plot with threshold annotation
+    binx plot --input geno.tsv --output ld.svg --plot-type ld --ploidy 4 --r2-threshold 0.2
+
+    # LD plot for specific chromosomes
+    binx plot --input geno.tsv --output ld.svg --plot-type ld --ploidy 4 --chromosomes chr05,chr09")]
     Plot {
-        /// Input GWAS results CSV file
-        #[arg(long)]
+        // === Input/Output ===
+        /// Input file: GWAS results CSV (manhattan/qq) or genotype TSV (ld)
+        #[arg(long, help_heading = "Input/Output")]
         input: String,
 
-        /// Output file path (extension determines format: .svg or .png)
-        #[arg(long)]
+        /// Output file path (.svg or .png)
+        #[arg(long, help_heading = "Input/Output")]
         output: String,
 
-        /// Plot type: manhattan or qq
-        #[arg(long, default_value = "manhattan")]
+        /// Plot type
+        #[arg(long, default_value = "manhattan", value_parser = ["manhattan", "qq", "ld"], help_heading = "Input/Output")]
         plot_type: String,
 
-        /// Filter to specific model (e.g., additive, general)
-        #[arg(long)]
-        model: Option<String>,
-
-        /// Significance threshold as -log10(p), default 5.0
-        #[arg(long, default_value = "5.0")]
-        threshold: f64,
-
-        /// Suggestive threshold as -log10(p), default 3.0 (use 0 to disable)
-        #[arg(long, default_value = "3.0")]
-        suggestive: f64,
-
+        // === Appearance ===
         /// Plot title
-        #[arg(long)]
+        #[arg(long, help_heading = "Appearance")]
         title: Option<String>,
 
-        /// Color theme: classic, nature, colorful, dark, high_contrast
-        #[arg(long, default_value = "classic")]
+        /// Color theme
+        #[arg(long, default_value = "classic", value_parser = ["classic", "nature", "colorful", "dark", "high_contrast"], help_heading = "Appearance")]
         theme: String,
 
         /// Plot width in pixels
-        #[arg(long, default_value = "1200")]
+        #[arg(long, default_value = "1200", help_heading = "Appearance")]
         width: u32,
 
         /// Plot height in pixels
-        #[arg(long, default_value = "600")]
+        #[arg(long, default_value = "600", help_heading = "Appearance")]
         height: u32,
 
-        /// Filter to specific chromosomes (comma-separated, e.g., "1,2,3" or "chr1,chr2")
-        #[arg(long)]
+        // === Manhattan/QQ Options ===
+        /// Filter to specific model (e.g., additive, general)
+        #[arg(long, help_heading = "Manhattan/QQ Options")]
+        model: Option<String>,
+
+        /// Significance threshold as -log10(p)
+        #[arg(long, default_value = "5.0", help_heading = "Manhattan/QQ Options")]
+        threshold: f64,
+
+        /// Suggestive threshold as -log10(p) (0 to disable)
+        #[arg(long, default_value = "3.0", help_heading = "Manhattan/QQ Options")]
+        suggestive: f64,
+
+        /// Filter to specific chromosomes (comma-separated)
+        #[arg(long, help_heading = "Manhattan/QQ Options")]
         chromosomes: Option<String>,
+
+        // === LD Plot Options ===
+        /// Ploidy level (required for ld plot)
+        #[arg(long, help_heading = "LD Plot Options")]
+        ploidy: Option<u8>,
+
+        /// R² threshold to mark on plot (draws line, reports distance)
+        #[arg(long, help_heading = "LD Plot Options")]
+        r2_threshold: Option<f64>,
+
+        /// Maximum marker pairs to sample
+        #[arg(long, default_value = "10000", help_heading = "LD Plot Options")]
+        max_pairs: usize,
+
+        /// Maximum markers per chromosome
+        #[arg(long, help_heading = "LD Plot Options")]
+        max_loci: Option<usize>,
+
+        /// Number of distance bins for smoothing
+        #[arg(long, default_value = "50", help_heading = "LD Plot Options")]
+        n_bins: usize,
     },
 }
 
@@ -577,8 +670,30 @@ fn main() -> Result<()> {
             width,
             height,
             chromosomes,
+            ploidy,
+            max_pairs,
+            max_loci,
+            n_bins,
+            r2_threshold,
         } => {
-            run_plot(&input, &output, &plot_type, model.as_deref(), threshold, suggestive, title, &theme, width, height, chromosomes.as_deref())?;
+            run_plot(
+                &input,
+                &output,
+                &plot_type,
+                model.as_deref(),
+                threshold,
+                suggestive,
+                title,
+                &theme,
+                width,
+                height,
+                chromosomes.as_deref(),
+                ploidy,
+                max_pairs,
+                max_loci,
+                n_bins,
+                r2_threshold,
+            )?;
         }
     }
 
@@ -922,10 +1037,68 @@ fn run_plot(
     width: u32,
     height: u32,
     chromosomes: Option<&str>,
+    ploidy: Option<u8>,
+    max_pairs: usize,
+    max_loci: Option<usize>,
+    n_bins: usize,
+    r2_threshold: Option<f64>,
 ) -> Result<()> {
     use binx_plotting::{manhattan_plot, qq_plot, PlotConfig, load_gwas_results, filter_by_model, themes::Theme};
+    use binx_plotting::{ld_plot_from_file, LDPlotConfig};
 
-    // Load results
+    // Parse theme
+    let theme = match theme_name {
+        "classic" => Theme::classic(),
+        "nature" => Theme::nature(),
+        "colorful" => Theme::colorful(),
+        "dark" => Theme::dark(),
+        "high_contrast" => Theme::high_contrast(),
+        _ => {
+            eprintln!("Unknown theme '{}', using classic", theme_name);
+            Theme::classic()
+        }
+    };
+
+    // Parse chromosome filter
+    let chrom_filter: Option<Vec<String>> = chromosomes.map(|c| {
+        c.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    });
+
+    // Handle LD plot separately (different input format)
+    if plot_type == "ld" {
+        let ploidy_val = ploidy.ok_or_else(|| {
+            anyhow::anyhow!("LD plot requires --ploidy argument")
+        })?;
+
+        let ld_config = LDPlotConfig {
+            max_pairs,
+            max_loci_per_chrom: max_loci,
+            n_bins,
+            show_points: false,
+            r2_threshold,
+            chromosomes: chrom_filter,
+            plot_config: PlotConfig {
+                width,
+                height,
+                significance_threshold: threshold,
+                suggestive_threshold: if suggestive > 0.0 { Some(suggestive) } else { None },
+                title,
+                theme,
+                point_size: 3,
+                show_chrom_labels: true,
+                chromosomes: None,
+            },
+        };
+
+        ld_plot_from_file(input, output, ploidy_val, ld_config)?;
+        eprintln!("LD plot saved to {}", output);
+        return Ok(());
+    }
+
+    // For manhattan/qq plots, load GWAS results
     eprintln!("Loading GWAS results from {}...", input);
     let mut results = load_gwas_results(input)?;
 
@@ -940,30 +1113,9 @@ fn run_plot(
         anyhow::bail!("No results to plot after filtering");
     }
 
-    // Parse chromosome filter
-    let chrom_filter: Option<Vec<String>> = chromosomes.map(|c| {
-        c.split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect()
-    });
-
     if let Some(ref chroms) = chrom_filter {
         eprintln!("Filtering to chromosomes: {:?}", chroms);
     }
-
-    // Parse theme
-    let theme = match theme_name {
-        "classic" => Theme::classic(),
-        "nature" => Theme::nature(),
-        "colorful" => Theme::colorful(),
-        "dark" => Theme::dark(),
-        "high_contrast" => Theme::high_contrast(),
-        _ => {
-            eprintln!("Unknown theme '{}', using classic", theme_name);
-            Theme::classic()
-        }
-    };
 
     // Build config
     let config = PlotConfig {
@@ -989,7 +1141,7 @@ fn run_plot(
             qq_plot(&results, output, config)?;
         }
         _ => {
-            anyhow::bail!("Unknown plot type '{}'. Use 'manhattan' or 'qq'", plot_type);
+            anyhow::bail!("Unknown plot type '{}'. Use 'manhattan', 'qq', or 'ld'", plot_type);
         }
     }
 

@@ -23,6 +23,7 @@
 
 pub mod manhattan;
 pub mod qq;
+pub mod ld;
 pub mod themes;
 pub mod output;
 
@@ -193,3 +194,4 @@ pub fn filter_by_chromosomes(results: &[GwasPoint], chromosomes: &[String]) -> V
 // Re-export main functions
 pub use manhattan::manhattan_plot;
 pub use qq::qq_plot;
+pub use ld::{ld_plot, ld_plot_from_file, LDPlotConfig, LDData, LDPoint};
