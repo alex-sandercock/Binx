@@ -32,7 +32,12 @@ binx gwaspoly --geno potato_geno.tsv --pheno potato_pheno.csv \
     --threshold m.eff --out results.csv
 ```
 
-## LD Plot curve smoothness
+## LD Plot curve smoothness (2025-12-06)
 
-- [ ] Improve curve smoothness to match GWASpoly
+**Problem:** LD decay curve is not as smooth as GWASpoly's output. Current implementation uses binning + isotonic regression + cubic spline interpolation, but results don't match GWASpoly quality.
+
+### To investigate:
 - [ ] Benchmark r² threshold distance against GWASpoly output
+- [ ] Compare curve shape visually with GWASpoly LD.plot
+- [ ] Evaluate if scam (shape-constrained additive model) approach is needed
+- [ ] Check if `n_bins` parameter still affects results inappropriately
