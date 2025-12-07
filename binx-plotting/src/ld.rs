@@ -35,7 +35,7 @@ impl Default for LDPlotConfig {
         Self {
             max_pairs: 10_000, // Match R/GWASpoly default
             max_loci_per_chrom: None,
-            n_bins: 50,
+            n_bins: 100, // More bins for smoother curve
             show_points: false,
             r2_threshold: None,
             chromosomes: None,
@@ -56,8 +56,10 @@ pub struct LDPoint {
 pub struct LDData {
     /// Raw LD points (distance in Mb, r²)
     pub points: Vec<LDPoint>,
-    /// Binned data: (bin_center_mb, mean_r2)
+    /// Binned data: (bin_center_mb, mean_r2) after isotonic regression
     pub binned: Vec<(f64, f64)>,
+    /// Smooth curve points for plotting (generated via cubic spline)
+    pub smooth_curve: Vec<(f64, f64)>,
     /// Maximum distance in Mb
     pub max_distance: f64,
     /// Distance at which r² drops to threshold (if threshold specified)
@@ -165,44 +167,21 @@ pub fn calculate_ld_data(
     // Bin the data
     let binned = bin_ld_data(&all_points, config.n_bins, max_distance);
 
-    // Find distance where r² drops to threshold
+    // Generate smooth curve using monotone cubic spline (500 points for smooth rendering)
+    let smooth_curve = generate_smooth_curve(&binned, 500);
+
+    // Find distance where r² drops to threshold using smooth curve for accuracy
     let threshold_distance = config.r2_threshold.and_then(|thresh| {
-        find_threshold_distance(&binned, thresh)
+        find_threshold_distance_smooth(&smooth_curve, thresh)
     });
 
     Ok(LDData {
         points: all_points,
         binned,
+        smooth_curve,
         max_distance,
         threshold_distance,
     })
-}
-
-/// Find the distance at which r² drops to the threshold value
-fn find_threshold_distance(binned: &[(f64, f64)], threshold: f64) -> Option<f64> {
-    if binned.is_empty() {
-        return None;
-    }
-
-    // Find first bin where r² <= threshold
-    for i in 0..binned.len() {
-        if binned[i].1 <= threshold {
-            if i == 0 {
-                return Some(binned[0].0);
-            }
-            // Interpolate between bins
-            let (x0, y0) = binned[i - 1];
-            let (x1, y1) = binned[i];
-            if (y0 - y1).abs() < 1e-10 {
-                return Some(x0);
-            }
-            let x = x0 + (threshold - y0) * (x1 - x0) / (y1 - y0);
-            return Some(x);
-        }
-    }
-
-    // r² never drops to threshold
-    None
 }
 
 /// Calculate r² (squared Pearson correlation) between two genotype vectors
@@ -324,6 +303,149 @@ fn isotonic_decreasing(data: &mut [(f64, f64)]) {
     }
 }
 
+/// Generate smooth curve using monotone cubic spline interpolation (Fritsch-Carlson method)
+/// This preserves monotonicity while creating a smooth curve through the data points
+fn generate_smooth_curve(data: &[(f64, f64)], n_points: usize) -> Vec<(f64, f64)> {
+    if data.len() < 2 {
+        return data.to_vec();
+    }
+
+    let n = data.len();
+    let x: Vec<f64> = data.iter().map(|(x, _)| *x).collect();
+    let y: Vec<f64> = data.iter().map(|(_, y)| *y).collect();
+
+    // Calculate slopes between consecutive points
+    let mut delta: Vec<f64> = Vec::with_capacity(n - 1);
+    for i in 0..n - 1 {
+        let dx = x[i + 1] - x[i];
+        if dx.abs() < 1e-10 {
+            delta.push(0.0);
+        } else {
+            delta.push((y[i + 1] - y[i]) / dx);
+        }
+    }
+
+    // Initialize tangents using Fritsch-Carlson method
+    let mut m: Vec<f64> = vec![0.0; n];
+
+    // Endpoints
+    m[0] = delta[0];
+    m[n - 1] = delta[n - 2];
+
+    // Interior points: average of adjacent secants, but only if same sign
+    for i in 1..n - 1 {
+        if delta[i - 1] * delta[i] <= 0.0 {
+            // Different signs or zero - set tangent to zero for monotonicity
+            m[i] = 0.0;
+        } else {
+            // Same sign - use harmonic mean for better monotonicity preservation
+            m[i] = (delta[i - 1] + delta[i]) / 2.0;
+        }
+    }
+
+    // Fritsch-Carlson modification to ensure monotonicity
+    for i in 0..n - 1 {
+        if delta[i].abs() < 1e-10 {
+            // Flat segment
+            m[i] = 0.0;
+            m[i + 1] = 0.0;
+        } else {
+            let alpha = m[i] / delta[i];
+            let beta = m[i + 1] / delta[i];
+
+            // Check if we're in the monotonicity region
+            let tau = alpha * alpha + beta * beta;
+            if tau > 9.0 {
+                // Restrict to monotonicity region
+                let tau_sqrt = tau.sqrt();
+                m[i] = 3.0 * delta[i] * alpha / tau_sqrt;
+                m[i + 1] = 3.0 * delta[i] * beta / tau_sqrt;
+            }
+        }
+    }
+
+    // Generate smooth curve points
+    let x_min = x[0];
+    let x_max = x[n - 1];
+    let mut result = Vec::with_capacity(n_points);
+
+    for i in 0..n_points {
+        let t = i as f64 / (n_points - 1) as f64;
+        let xi = x_min + t * (x_max - x_min);
+
+        // Find the interval containing xi
+        let mut seg = 0;
+        for j in 0..n - 1 {
+            if xi >= x[j] && xi <= x[j + 1] {
+                seg = j;
+                break;
+            }
+            if j == n - 2 {
+                seg = j; // Last segment
+            }
+        }
+
+        // Evaluate cubic Hermite spline
+        let h = x[seg + 1] - x[seg];
+        if h.abs() < 1e-10 {
+            result.push((xi, y[seg]));
+            continue;
+        }
+
+        let t_local = (xi - x[seg]) / h;
+        let t2 = t_local * t_local;
+        let t3 = t2 * t_local;
+
+        // Hermite basis functions
+        let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+        let h10 = t3 - 2.0 * t2 + t_local;
+        let h01 = -2.0 * t3 + 3.0 * t2;
+        let h11 = t3 - t2;
+
+        let yi = h00 * y[seg] + h10 * h * m[seg] + h01 * y[seg + 1] + h11 * h * m[seg + 1];
+
+        // Clamp to valid range [0, max_y] and ensure monotonicity
+        let yi_clamped = yi.max(0.0).min(y[0]);
+        result.push((xi, yi_clamped));
+    }
+
+    // Final pass: enforce strict monotone decreasing
+    for i in 1..result.len() {
+        if result[i].1 > result[i - 1].1 {
+            result[i].1 = result[i - 1].1;
+        }
+    }
+
+    result
+}
+
+/// Find threshold distance using smooth curve (more accurate than binned data)
+fn find_threshold_distance_smooth(curve: &[(f64, f64)], threshold: f64) -> Option<f64> {
+    if curve.is_empty() {
+        return None;
+    }
+
+    // Find first point where r² <= threshold
+    for i in 0..curve.len() {
+        if curve[i].1 <= threshold {
+            if i == 0 {
+                return Some(curve[0].0);
+            }
+            // Linear interpolate for precise distance
+            let (x0, y0) = curve[i - 1];
+            let (x1, y1) = curve[i];
+            if (y0 - y1).abs() < 1e-10 {
+                return Some(x0);
+            }
+            let x = x0 + (threshold - y0) * (x1 - x0) / (y1 - y0);
+            return Some(x);
+        }
+    }
+
+    // r² never drops to threshold
+    None
+}
+
 /// Generate LD decay plot
 pub fn ld_plot(
     geno: &binx_core::GenotypeMatrixBiallelic,
@@ -387,27 +509,42 @@ where
     root.fill(&theme.background)?;
 
     let max_x = ld_data.max_distance * 1.05; // 5% padding
-    let max_y = 1.0; // r² is always 0-1
 
-    let title = config
-        .plot_config
-        .title
-        .clone()
-        .unwrap_or_else(|| "LD Decay".to_string());
+    // Auto-scale y-axis based on actual data (like GWASpoly)
+    let data_max_r2 = ld_data
+        .smooth_curve
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(0.0_f64, |a, b| a.max(b));
+    let max_y = (data_max_r2 * 1.15).max(0.1); // 15% padding, minimum 0.1
 
-    let mut chart = ChartBuilder::on(root)
-        .caption(&title, ("sans-serif", 24).into_font().color(&theme.text))
-        .margin(10)
+    // Build chart - title is optional (default to None for cleaner look like GWASpoly)
+    let mut chart_builder = ChartBuilder::on(root);
+    chart_builder
+        .margin(15)
         .x_label_area_size(50)
-        .y_label_area_size(60)
-        .build_cartesian_2d(0.0..max_x, 0.0..max_y)?;
+        .y_label_area_size(60);
+
+    // Only add caption if title is explicitly provided
+    if let Some(ref title) = config.plot_config.title {
+        chart_builder.caption(title, ("sans-serif", 20).into_font().color(&theme.text));
+    }
+
+    let mut chart = chart_builder.build_cartesian_2d(0.0..max_x, 0.0..max_y)?;
+
+    // Light gray gridlines for professional look (like GWASpoly/ggplot2)
+    let grid_color = RGBColor(220, 220, 220);
 
     chart
         .configure_mesh()
         .x_desc("Distance (Mb)")
         .y_desc("r²")
         .axis_style(&theme.axis)
-        .label_style(("sans-serif", 14).into_font().color(&theme.text))
+        .light_line_style(grid_color)
+        .bold_line_style(grid_color.mix(0.8))
+        .x_label_style(("sans-serif", 14).into_font().color(&theme.text))
+        .y_label_style(("sans-serif", 14).into_font().color(&theme.text))
+        .axis_desc_style(("sans-serif", 18).into_font().color(&theme.text))
         .draw()?;
 
     // Draw individual points if requested (semi-transparent)
@@ -441,20 +578,14 @@ where
         )))?;
     }
 
-    // Draw the binned/smoothed line
-    if !ld_data.binned.is_empty() {
-        let line_color = theme.chromosome_colors[0];
+    // Draw the smooth spline curve - thicker line, no markers (like GWASpoly)
+    if !ld_data.smooth_curve.is_empty() {
+        let line_color = BLACK; // Clean black line like GWASpoly
 
-        // Draw as connected line
         chart.draw_series(LineSeries::new(
-            ld_data.binned.iter().map(|(x, y)| (*x, *y)),
-            line_color.stroke_width(2),
+            ld_data.smooth_curve.iter().map(|(x, y)| (*x, *y)),
+            line_color.stroke_width(3), // Thicker line
         ))?;
-
-        // Draw points on the line
-        chart.draw_series(ld_data.binned.iter().map(|(x, y)| {
-            Circle::new((*x, *y), 4, line_color.filled())
-        }))?;
     }
 
     Ok(())
@@ -526,7 +657,7 @@ mod tests {
 
     #[test]
     fn test_find_threshold_distance() {
-        let binned = vec![
+        let curve = vec![
             (0.1, 0.9),
             (0.2, 0.7),
             (0.3, 0.5),
@@ -535,9 +666,28 @@ mod tests {
         ];
 
         // Find distance where r² = 0.4 (interpolate between 0.5 and 0.3)
-        let dist = find_threshold_distance(&binned, 0.4);
+        let dist = find_threshold_distance_smooth(&curve, 0.4);
         assert!(dist.is_some());
         let d = dist.unwrap();
         assert!(d > 0.3 && d < 0.4);
+    }
+
+    #[test]
+    fn test_generate_smooth_curve() {
+        let data = vec![
+            (0.0, 1.0),
+            (1.0, 0.5),
+            (2.0, 0.2),
+            (3.0, 0.1),
+        ];
+        let smooth = generate_smooth_curve(&data, 100);
+        assert_eq!(smooth.len(), 100);
+        // Should be monotone decreasing
+        for i in 1..smooth.len() {
+            assert!(smooth[i].1 <= smooth[i - 1].1);
+        }
+        // Should start and end near original values
+        assert!((smooth[0].1 - 1.0).abs() < 0.01);
+        assert!((smooth[99].1 - 0.1).abs() < 0.05);
     }
 }

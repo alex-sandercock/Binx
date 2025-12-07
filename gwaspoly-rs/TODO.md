@@ -31,3 +31,8 @@ binx gwaspoly --geno potato_geno.tsv --pheno potato_pheno.csv \
     --trait_name vine.maturity --ploidy 4 --models additive \
     --threshold m.eff --out results.csv
 ```
+
+## LD Plot curve smoothness
+
+- [ ] Improve curve smoothness to match GWASpoly
+- [ ] Benchmark r² threshold distance against GWASpoly output
