@@ -330,93 +330,70 @@ fn compute_meff(
 /// Compute Keff (effective number of tests) from r² matrix
 /// Based on Moskvina & Schmidt (2008), Genetic Epidemiology 32:567-573
 ///
-/// This implements R/GWASpoly's Keff function
-fn keff_from_r2(r2: &Array2<f64>, _alpha: f64) -> Result<f64> {
-    let n = r2.nrows();
-    if n == 0 {
-        return Ok(0.0);
-    }
-    if n == 1 {
+/// This implements R/GWASpoly's exact Keff function:
+/// ```r
+/// Keff <- function(r2, alpha) {
+///   m <- nrow(r2)
+///   if (m > 1) {
+///     Q <- sqrt(r2)                           # Get |r| from r²
+///     Q[upper.tri(Q, diag=T)] <- NA           # Remove upper triangle + diagonal
+///     rmax <- apply(Q[-1,], 1, max, na.rm=T)  # Max correlation with any prior marker
+///     kappa <- sqrt(1 - rmax^(-1.31*log10(alpha)))
+///     return(1 + sum(kappa))
+///   } else {
+///     return(1)
+///   }
+/// }
+/// ```
+fn keff_from_r2(r2: &Array2<f64>, alpha: f64) -> Result<f64> {
+    let m = r2.nrows();
+
+    if m <= 1 {
         return Ok(1.0);
     }
 
-    // Compute eigenvalues of r² matrix
-    // For symmetric matrix, all eigenvalues are real
-    // Using simple power iteration or direct computation
-    let eigenvalues = compute_eigenvalues_symmetric(r2)?;
+    // Q = sqrt(r2) to get absolute correlations |r|
+    // Then for each marker i (starting from 1, skipping marker 0),
+    // find rmax = max correlation with any marker j < i
 
-    // Keff formula from Moskvina & Schmidt:
-    // Keff = sum_i { I(lambda_i >= 1) + (lambda_i - floor(lambda_i)) * (1 - alpha^(lambda_i - floor(lambda_i))) }
-    //
-    // Simplified: for each eigenvalue λ:
-    // - If λ ≥ 1: contribution = floor(λ) + fractional_correction
-    // - If λ < 1: contribution = 1 - (1-α)^λ  (approximately)
-    //
-    // The R/GWASpoly implementation uses:
-    // Keff = sum over eigenvalues of: 1 + (lambda - 1) * I(lambda > 1)
-    // which simplifies to: number of eigenvalues + sum(max(0, lambda - 1))
+    let log10_alpha = alpha.log10(); // This will be negative, e.g., log10(0.05) ≈ -1.30
 
-    // Let's implement the exact formula from the paper:
-    // M_eff^Li = sum_i [1 - (1 - λ_i/M)^M] where M = number of tests
-    // But GWASpoly uses a simpler approach based on the correlation structure
+    let mut kappa_sum = 0.0;
 
-    // R/GWASpoly Keff implementation:
-    // Keff <- function(r2, alpha) {
-    //   eigenvalues <- eigen(r2, only.values=TRUE)$values
-    //   eigenvalues <- eigenvalues[eigenvalues > 1e-6]  # filter small values
-    //   keff <- sum(1 + (eigenvalues - 1) * (eigenvalues > 1))
-    //   # Alternative: Li & Ji (2005) method
-    //   # keff <- sum(1 - (1 - eigenvalues/length(eigenvalues))^length(eigenvalues))
-    //   return(max(keff, 1))
-    // }
+    // For each marker i from 1 to m-1 (skipping the first marker)
+    for i in 1..m {
+        // Find max |r| with any marker j < i
+        let mut rmax: f64 = 0.0;
+        for j in 0..i {
+            let r2_val = r2[(i, j)];
+            let r_abs = r2_val.sqrt(); // |r| = sqrt(r²)
+            if r_abs > rmax {
+                rmax = r_abs;
+            }
+        }
 
-    // Filter out very small eigenvalues (numerical noise)
-    let filtered: Vec<f64> = eigenvalues.iter().cloned().filter(|&e| e > 1e-6).collect();
-
-    if filtered.is_empty() {
-        return Ok(1.0);
-    }
-
-    // Use the simpler GWASpoly-style Keff:
-    // keff = sum(1 + max(0, lambda - 1)) = n_eigenvalues + sum(max(0, lambda - 1))
-    let keff: f64 = filtered
-        .iter()
-        .map(|&lambda| 1.0 + (lambda - 1.0).max(0.0))
-        .sum();
-
-    Ok(keff.max(1.0))
-}
-
-/// Compute eigenvalues of a symmetric matrix using power iteration for largest
-/// and deflation for subsequent eigenvalues
-fn compute_eigenvalues_symmetric(mat: &Array2<f64>) -> Result<Vec<f64>> {
-    let n = mat.nrows();
-    if n == 0 {
-        return Ok(vec![]);
-    }
-    if n == 1 {
-        return Ok(vec![mat[(0, 0)]]);
-    }
-
-    // For small matrices, we can use direct computation
-    // For larger matrices, this is approximate but sufficient for Keff
-
-    // Convert to nalgebra for eigenvalue computation
-    use nalgebra::DMatrix;
-
-    let mut data = Vec::with_capacity(n * n);
-    for i in 0..n {
-        for j in 0..n {
-            data.push(mat[(i, j)]);
+        // Compute kappa = sqrt(1 - rmax^(-1.31 * log10(alpha)))
+        // Note: log10(alpha) is negative (e.g., -1.30 for alpha=0.05)
+        // So -1.31 * log10(alpha) is positive (e.g., 1.70)
+        // And rmax^(positive) approaches 0 as rmax → 0, and = 1 when rmax = 1
+        if rmax > 0.0 && rmax < 1.0 {
+            let exponent = -1.31 * log10_alpha;
+            let rmax_pow = rmax.powf(exponent);
+            let kappa = (1.0 - rmax_pow).max(0.0).sqrt();
+            kappa_sum += kappa;
+        } else if rmax >= 1.0 {
+            // Perfect correlation: this marker adds nothing
+            // kappa = sqrt(1 - 1) = 0
+        } else {
+            // rmax = 0: no correlation, full independent marker
+            // rmax^(positive exponent) = 0
+            // kappa = sqrt(1 - 0) = 1
+            kappa_sum += 1.0;
         }
     }
-    let na_mat = DMatrix::from_row_slice(n, n, &data);
 
-    // Use symmetric eigenvalue decomposition
-    let symmetric = na_mat.symmetric_eigen();
-    let eigenvalues: Vec<f64> = symmetric.eigenvalues.iter().cloned().collect();
-
-    Ok(eigenvalues)
+    // Keff = 1 + sum(kappa)
+    Ok(1.0 + kappa_sum)
 }
 
 /// Compute FDR threshold using Benjamini-Hochberg procedure
@@ -603,7 +580,7 @@ mod tests {
         // 1000 markers, alpha = 0.05
         // threshold = -log10(0.05/1000) = -log10(5e-5) ≈ 4.30
         let n = 1000;
-        let level = 0.05;
+        let level: f64 = 0.05;
         let thresh = -level.log10() + (n as f64).log10();
         assert!((thresh - 4.30).abs() < 0.1);
     }
@@ -619,7 +596,10 @@ mod tests {
 
     #[test]
     fn test_keff_identity() {
-        // For identity matrix, Keff = n (no LD)
+        // For identity matrix (no LD), each marker is independent
+        // rmax = 0 for each marker i > 0 (off-diagonals are 0)
+        // kappa = sqrt(1 - 0^exponent) = sqrt(1 - 0) = 1
+        // Keff = 1 + (m-1)*1 = m
         let r2 = Array2::eye(5);
         let keff = keff_from_r2(&r2, 0.05).unwrap();
         assert!((keff - 5.0).abs() < 0.1);
@@ -627,15 +607,26 @@ mod tests {
 
     #[test]
     fn test_keff_full_ld() {
-        // For matrix of all 1s (perfect LD), Keff should be close to 1
+        // For matrix of all 1s (perfect LD), Keff should be 1
+        // rmax = 1 for each marker i > 0
+        // kappa = sqrt(1 - 1^exponent) = sqrt(1 - 1) = 0
+        // Keff = 1 + 0 = 1
         let r2 = Array2::from_elem((5, 5), 1.0);
         let keff = keff_from_r2(&r2, 0.05).unwrap();
-        // All markers are perfectly correlated, so effective = 1
-        // The eigenvalue is n for rank-1 matrix, others are 0
-        // So keff = 1 + (n - 1) = n... but actually with perfect LD
-        // the effective number should be lower. The formula gives us
-        // 1 + (5 - 1) = 5 from the largest eigenvalue
-        // This is a limitation of the simple formula
-        assert!(keff >= 1.0);
+        assert!((keff - 1.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_keff_partial_ld() {
+        // Test with moderate LD (r² = 0.5 off-diagonal)
+        // This simulates markers with 50% shared variance
+        let mut r2 = Array2::from_elem((3, 3), 0.5);
+        r2[(0, 0)] = 1.0;
+        r2[(1, 1)] = 1.0;
+        r2[(2, 2)] = 1.0;
+
+        let keff = keff_from_r2(&r2, 0.05).unwrap();
+        // Should be between 1 (perfect LD) and 3 (no LD)
+        assert!(keff > 1.0 && keff < 3.0);
     }
 }
