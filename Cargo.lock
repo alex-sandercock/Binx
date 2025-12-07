@@ -125,6 +125,7 @@ name = "binx-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "binx-core",
  "binx-dosage",
  "binx-kinship",
  "binx-multigwas",

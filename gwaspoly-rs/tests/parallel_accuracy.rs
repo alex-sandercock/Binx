@@ -104,6 +104,7 @@ fn test_markers_sequential(
                         p_value: 0.5, // Placeholder
                         effect: Some(cov / variance.max(1e-10)),
                         n_obs: y.len(),
+                        threshold: None,
                     });
                 }
             }

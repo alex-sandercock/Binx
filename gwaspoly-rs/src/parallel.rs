@@ -202,6 +202,7 @@ fn test_marker_parallel(
             p_value,
             effect,
             n_obs: y.len(),
+            threshold: None,
         });
     }
 

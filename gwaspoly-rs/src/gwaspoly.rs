@@ -21,6 +21,7 @@ use ndarray::{Array1, Array2, Axis};
 use rrblup_rs::{mixed_solve_new, MixedSolveOptions};
 
 use crate::set_k::compute_loco_kinship_gwaspoly;
+use crate::threshold::{ThresholdMethod, calculate_thresholds, print_thresholds};
 use statrs::distribution::{ContinuousCDF, FisherSnedecor};
 use std::collections::HashMap;
 
@@ -117,6 +118,8 @@ pub struct MarkerResult {
     pub p_value: f64,
     pub effect: Option<f64>,
     pub n_obs: usize,
+    /// Significance threshold for this model (NA if not computed)
+    pub threshold: Option<f64>,
 }
 
 /// Fit null mixed model using the validated rrblup-rs mixed_solve implementation.
@@ -185,6 +188,11 @@ pub(crate) fn fit_null_model(
 /// - Supports repeated observations per genotype (multi-environment trials)
 /// - Uses Z incidence matrix to map observations to genotypes
 /// - Fixed effects (like environment) are included in the model, not filtered
+///
+/// # Threshold calculation
+/// If `threshold_method` is provided, the function will compute significance thresholds
+/// for each model using the specified method (Bonferroni, M.eff, or FDR) and include
+/// them in the output.
 pub fn run_gwaspoly(
     geno_path: &str,
     pheno_path: &str,
@@ -201,6 +209,8 @@ pub fn run_gwaspoly(
     max_geno_freq: f64,
     out_path: &str,
     use_parallel: bool,
+    threshold_method: Option<ThresholdMethod>,
+    alpha: f64,
 ) -> Result<()> {
     // Load data - don't filter by environment, include all observations
     let geno_full = load_genotypes_biallelic_from_tsv(geno_path, ploidy)?;
@@ -481,6 +491,23 @@ pub fn run_gwaspoly(
         }
     }
 
+    // Calculate thresholds if requested
+    if let Some(method) = threshold_method {
+        eprintln!("Calculating {} thresholds (alpha={})...", method.as_str(), alpha);
+
+        let thresholds = calculate_thresholds(&all_results, &geno, method, alpha)?;
+
+        // Print threshold summary to stderr
+        print_thresholds(&thresholds);
+
+        // Update results with threshold values
+        for result in &mut all_results {
+            if let Some(thresh_result) = thresholds.get(&result.model) {
+                result.threshold = Some(thresh_result.threshold);
+            }
+        }
+    }
+
     // Write results
     write_gwaspoly_results(out_path, &all_results)?;
 
@@ -549,6 +576,7 @@ pub(crate) fn test_marker_all_models_with_z(
             p_value,
             effect,
             n_obs: y.len(),
+            threshold: None,
         });
     }
 
@@ -1001,7 +1029,7 @@ fn align_kinship_to_genotypes_owned(
     })
 }
 
-fn write_gwaspoly_results(path: &str, results: &[MarkerResult]) -> Result<()> {
+pub(crate) fn write_gwaspoly_results(path: &str, results: &[MarkerResult]) -> Result<()> {
     let mut wtr = csv::WriterBuilder::new()
         .delimiter(b',')
         .from_path(path)?;
@@ -1015,6 +1043,7 @@ fn write_gwaspoly_results(path: &str, results: &[MarkerResult]) -> Result<()> {
         "p_value",
         "effect",
         "n_obs",
+        "threshold",
     ])?;
 
     for r in results {
@@ -1023,6 +1052,10 @@ fn write_gwaspoly_results(path: &str, results: &[MarkerResult]) -> Result<()> {
         let effect = r
             .effect
             .map(|e| e.to_string())
+            .unwrap_or_else(|| "NA".to_string());
+        let threshold = r
+            .threshold
+            .map(|t| format!("{:.4}", t))
             .unwrap_or_else(|| "NA".to_string());
         wtr.write_record(&[
             &r.marker_id,
@@ -1033,6 +1066,7 @@ fn write_gwaspoly_results(path: &str, results: &[MarkerResult]) -> Result<()> {
             &r.p_value.to_string(),
             &effect,
             &r.n_obs.to_string(),
+            &threshold,
         ])?;
     }
 

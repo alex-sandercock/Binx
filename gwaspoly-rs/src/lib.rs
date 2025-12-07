@@ -48,6 +48,9 @@ pub mod set_k;
 // Parallel marker testing module
 pub mod parallel;
 
+// Threshold calculation module (set.threshold implementation)
+pub mod threshold;
+
 // Re-export main types and functions from gwaspoly
 pub use gwaspoly::{
     GwasCache,
@@ -55,4 +58,14 @@ pub use gwaspoly::{
     MarkerResult,
     run_gwaspoly,
     write_gwaspoly_scores_wide,
+};
+
+// Re-export threshold types and functions
+pub use threshold::{
+    ThresholdMethod,
+    ThresholdResult,
+    calculate_thresholds,
+    calculate_thresholds_simple,
+    load_gwas_results_for_threshold,
+    print_thresholds,
 };

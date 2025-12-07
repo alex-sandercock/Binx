@@ -110,6 +110,14 @@ enum Commands {
         /// Output path for plots (default: <out>.manhattan.svg, <out>.qq.svg)
         #[arg(long)]
         plot_output: Option<String>,
+
+        /// Threshold calculation method (bonferroni, m.eff, or fdr)
+        #[arg(long)]
+        threshold: Option<String>,
+
+        /// Significance level for threshold calculation (default: 0.05)
+        #[arg(long, default_value = "0.05")]
+        alpha: f64,
     },
 
     /// Compute kinship matrix from biallelic dosages
@@ -129,6 +137,29 @@ enum Commands {
         /// Output TSV path for kinship matrix
         #[arg(long)]
         out: String,
+    },
+
+    /// Calculate significance thresholds for GWAS results
+    Threshold {
+        /// GWAS results CSV file (output from gwaspoly command)
+        #[arg(long)]
+        results: String,
+
+        /// Threshold method: bonferroni, m.eff, or fdr
+        #[arg(long)]
+        method: String,
+
+        /// Significance level (default: 0.05)
+        #[arg(long, default_value = "0.05")]
+        alpha: f64,
+
+        /// Genotype dosage file (required for m.eff method)
+        #[arg(long)]
+        geno: Option<String>,
+
+        /// Ploidy (required for m.eff method)
+        #[arg(long)]
+        ploidy: Option<u8>,
     },
 
     /// Genotype dosage estimation from sequencing read counts
@@ -287,6 +318,39 @@ fn main() -> Result<()> {
             });
             binx_kinship::run_kinship(&geno, ploidy, kin_method, &out)?;
         }
+        Commands::Threshold { results, method, alpha, geno, ploidy } => {
+            // Parse threshold method
+            let threshold_method = gwaspoly_rs::ThresholdMethod::from_str(&method).unwrap_or_else(|e| {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            });
+
+            // Load GWAS results
+            eprintln!("Loading GWAS results from {}...", results);
+            let gwas_results = gwaspoly_rs::load_gwas_results_for_threshold(&results)?;
+            eprintln!("Loaded {} results", gwas_results.len());
+
+            // Calculate thresholds
+            let thresholds = if threshold_method == gwaspoly_rs::ThresholdMethod::Meff {
+                // M.eff requires genotype data
+                let geno_path = geno.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("M.eff method requires --geno argument")
+                })?;
+                let ploidy_val = ploidy.ok_or_else(|| {
+                    anyhow::anyhow!("M.eff method requires --ploidy argument")
+                })?;
+
+                eprintln!("Loading genotype data for M.eff calculation...");
+                let geno_data = binx_core::load_genotypes_biallelic_from_tsv(geno_path, ploidy_val)?;
+                gwaspoly_rs::calculate_thresholds(&gwas_results, &geno_data, threshold_method, alpha)?
+            } else {
+                // Bonferroni and FDR don't need genotype data
+                gwaspoly_rs::calculate_thresholds_simple(&gwas_results, threshold_method, alpha)?
+            };
+
+            // Print results
+            gwaspoly_rs::print_thresholds(&thresholds);
+        }
         Commands::Gwaspoly {
             geno,
             pheno,
@@ -305,6 +369,8 @@ fn main() -> Result<()> {
             parallel,
             plot,
             plot_output,
+            threshold,
+            alpha,
         } => {
             let covariate_list = covariates.as_deref().map(parse_csv_list);
             let model_list: Vec<gwaspoly_rs::GeneActionModel> = models
@@ -323,6 +389,14 @@ fn main() -> Result<()> {
                 eprintln!("No valid models specified");
                 std::process::exit(1);
             }
+
+            // Parse threshold method if provided
+            let threshold_method = threshold.as_ref().map(|t| {
+                gwaspoly_rs::ThresholdMethod::from_str(t).unwrap_or_else(|e| {
+                    eprintln!("{}", e);
+                    std::process::exit(1);
+                })
+            });
 
             if parallel {
                 eprintln!("Using parallel marker testing...");
@@ -343,6 +417,8 @@ fn main() -> Result<()> {
                 max_geno_freq,
                 &out,
                 parallel,
+                threshold_method,
+                alpha,
             )?;
 
             // Generate plots if requested
