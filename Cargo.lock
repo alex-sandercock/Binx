@@ -197,8 +197,11 @@ name = "binx-plotting"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "binx-core",
  "csv",
+ "ndarray",
  "plotters",
+ "rand",
  "serde",
  "tempfile",
 ]
