@@ -4,7 +4,7 @@
 
 use nalgebra::DMatrix;
 use rand::Rng;
-use rrblup_rs::{mixed_solve_new, mixed_solve_fast, MixedSolveOptions};
+use rrblup_rs::{mixed_solve_reml, mixed_solve_fast, MixedSolveOptions};
 use std::time::Instant;
 
 fn generate_test_data(n: usize, seed: u64) -> (Vec<f64>, DMatrix<f64>) {
@@ -35,14 +35,14 @@ fn benchmark_size(n: usize, runs: usize) {
     let opts = MixedSolveOptions::default();
 
     // Warmup
-    let _ = mixed_solve_new(&y, None, Some(&k), None, Some(opts.clone()));
+    let _ = mixed_solve_reml(&y, None, Some(&k), None, Some(opts.clone()));
     let _ = mixed_solve_fast(&y, None, Some(&k), None, Some(opts.clone()));
 
     // Benchmark original
     let mut times_orig = Vec::with_capacity(runs);
     for _ in 0..runs {
         let start = Instant::now();
-        let _ = mixed_solve_new(&y, None, Some(&k), None, Some(opts.clone()));
+        let _ = mixed_solve_reml(&y, None, Some(&k), None, Some(opts.clone()));
         times_orig.push(start.elapsed().as_secs_f64() * 1000.0);
     }
     let avg_orig: f64 = times_orig.iter().sum::<f64>() / (runs as f64);
@@ -63,7 +63,7 @@ fn benchmark_size(n: usize, runs: usize) {
     println!("  Speedup: {:.2}x", speedup);
 
     // Verify results match
-    let result_orig = mixed_solve_new(&y, None, Some(&k), None, Some(opts.clone())).unwrap();
+    let result_orig = mixed_solve_reml(&y, None, Some(&k), None, Some(opts.clone())).unwrap();
     let result_fast = mixed_solve_fast(&y, None, Some(&k), None, Some(opts.clone())).unwrap();
 
     let vu_diff = (result_orig.vu - result_fast.vu).abs();

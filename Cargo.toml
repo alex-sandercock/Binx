@@ -1,6 +1,8 @@
 [workspace]
 members = [
-    "binx-core",
+    "binx-types",
+    "binx-io",
+    "binx-gwas",
     "binx-multigwas",
     "binx-kinship",
     "binx-cli",

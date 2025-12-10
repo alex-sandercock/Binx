@@ -17,7 +17,7 @@ csv = "1.3"
 anyhow = "1"
 
 # For LD calculations
-binx-core = { path = "../binx-core" }
+binx-types = { path = "../binx-types" }
 ndarray = "0.15"
 rand = "0.8"
 

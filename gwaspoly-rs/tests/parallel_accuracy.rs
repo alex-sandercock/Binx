@@ -1,8 +1,7 @@
 //! Accuracy and performance comparison: sequential vs parallel marker testing
 
-use gwaspoly_rs::{GeneActionModel, GwasCache, MarkerResult};
+use gwaspoly_rs::{GeneActionModel, GenotypeMatrixBiallelic, GwasCache, MarkerResult};
 use gwaspoly_rs::parallel::test_markers_parallel;
-use binx_core::GenotypeMatrixBiallelic;
 use nalgebra::DMatrix;
 use ndarray::{Array1, Array2, Axis};
 use std::collections::HashMap;

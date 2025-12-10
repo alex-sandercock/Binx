@@ -125,11 +125,11 @@ name = "binx-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "binx-core",
  "binx-dosage",
  "binx-kinship",
  "binx-multigwas",
  "binx-plotting",
+ "binx-types",
  "clap",
  "csv",
  "gwaspoly-rs",
@@ -143,19 +143,6 @@ dependencies = [
  "anyhow",
  "binx-dosage",
  "clap",
-]
-
-[[package]]
-name = "binx-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "csv",
- "faer",
- "nalgebra",
- "ndarray",
- "serde",
- "tempfile",
 ]
 
 [[package]]
@@ -174,11 +161,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "binx-gwas"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ndarray",
+ "tempfile",
+]
+
+[[package]]
+name = "binx-io"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "csv",
+ "ndarray",
+ "serde",
+ "tempfile",
+]
+
+[[package]]
 name = "binx-kinship"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "binx-core",
+ "binx-types",
  "csv",
  "ndarray",
  "tempfile",
@@ -189,7 +196,7 @@ name = "binx-multigwas"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "binx-core",
+ "binx-types",
 ]
 
 [[package]]
@@ -197,11 +204,24 @@ name = "binx-plotting"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "binx-core",
+ "binx-types",
  "csv",
  "ndarray",
  "plotters",
  "rand",
+ "serde",
+ "tempfile",
+]
+
+[[package]]
+name = "binx-types"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "csv",
+ "faer",
+ "nalgebra",
+ "ndarray",
  "serde",
  "tempfile",
 ]
@@ -941,8 +961,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "approx",
- "binx-core",
- "binx-kinship",
  "csv",
  "nalgebra",
  "ndarray",
@@ -1641,8 +1659,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "approx",
- "binx-core",
- "binx-kinship",
  "csv",
  "faer",
  "nalgebra",

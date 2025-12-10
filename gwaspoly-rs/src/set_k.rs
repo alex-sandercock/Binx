@@ -43,7 +43,7 @@
 //! ```
 
 use anyhow::{anyhow, Result};
-use binx_core::{GenotypeMatrixBiallelic, KinshipMatrix};
+use crate::types::{GenotypeMatrixBiallelic, KinshipMatrix};
 use ndarray::{Array2, Axis};
 use std::collections::HashMap;
 
@@ -255,7 +255,10 @@ pub fn compute_loco_kinship_gwaspoly(
 ///
 /// # Returns
 /// Single kinship matrix
-pub fn compute_kinship_all_markers(geno: &GenotypeMatrixBiallelic) -> Result<KinshipMatrix> {
+/// Compute kinship matrix for all markers (R/GWASpoly set.K equivalent).
+///
+/// This is the main entry point for kinship calculation, mirroring R's `set.K()`.
+pub fn set_k(geno: &GenotypeMatrixBiallelic) -> Result<KinshipMatrix> {
     let n_markers = geno.marker_ids.len();
     let all_indices: Vec<usize> = (0..n_markers).collect();
 
@@ -270,7 +273,7 @@ pub fn compute_kinship_all_markers(geno: &GenotypeMatrixBiallelic) -> Result<Kin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use binx_core::MarkerMetadata;
+    use crate::types::MarkerMetadata;
     use ndarray::array;
 
     #[test]

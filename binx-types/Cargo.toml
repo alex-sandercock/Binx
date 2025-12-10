@@ -1,9 +1,9 @@
 [package]
-name = "binx-core"
+name = "binx-types"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-description = "Core data structures and IO for binx genomic toolkit"
+description = "Core data structures and I/O for binx genomic toolkit"
 
 [dependencies]
 anyhow = "1"

@@ -449,11 +449,11 @@ fn main() -> Result<()> {
                 })?;
 
                 eprintln!("Loading genotype data for M.eff calculation...");
-                let geno_data = binx_core::load_genotypes_biallelic_from_tsv(geno_path, ploidy_val)?;
-                gwaspoly_rs::calculate_thresholds(&gwas_results, &geno_data, threshold_method, alpha)?
+                let geno_data = gwaspoly_rs::load_genotypes(geno_path, ploidy_val)?;
+                gwaspoly_rs::set_threshold(&gwas_results, &geno_data, threshold_method, alpha)?
             } else {
                 // Bonferroni and FDR don't need genotype data
-                gwaspoly_rs::calculate_thresholds_simple(&gwas_results, threshold_method, alpha)?
+                gwaspoly_rs::set_threshold_simple(&gwas_results, threshold_method, alpha)?
             };
 
             // Print results
@@ -509,7 +509,7 @@ fn main() -> Result<()> {
             if parallel {
                 eprintln!("Using parallel marker testing...");
             }
-            gwaspoly_rs::run_gwaspoly(
+            gwaspoly_rs::gwaspoly(
                 &geno,
                 &pheno,
                 &trait_name,

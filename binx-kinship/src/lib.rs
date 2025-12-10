@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use binx_core::{load_genotypes_biallelic_from_tsv, GenotypeMatrixBiallelic, KinshipMatrix};
+use binx_types::{load_genotypes_biallelic_from_tsv, GenotypeMatrixBiallelic, KinshipMatrix};
 use ndarray::{Array2, Axis};
 
 /// Kinship computation methods
@@ -190,7 +190,7 @@ pub fn write_kinship_tsv(path: &str, kin: &KinshipMatrix) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use binx_core::GenotypeMatrixBiallelic;
+    use binx_types::GenotypeMatrixBiallelic;
     use ndarray::array;
     use std::fs;
     use tempfile::NamedTempFile;

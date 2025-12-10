@@ -11,7 +11,7 @@ use ndarray::Array2;
 use std::collections::HashMap;
 
 use crate::gwaspoly::MarkerResult;
-use binx_core::GenotypeMatrixBiallelic;
+use crate::types::GenotypeMatrixBiallelic;
 
 /// Threshold calculation method
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,7 +72,10 @@ pub struct ThresholdResult {
 ///
 /// # Returns
 /// HashMap of model name -> ThresholdResult
-pub fn calculate_thresholds(
+/// Set significance thresholds (R/GWASpoly set.threshold equivalent).
+///
+/// This is the main entry point for threshold calculation, mirroring R's `set.threshold()`.
+pub fn set_threshold(
     results: &[MarkerResult],
     geno: &GenotypeMatrixBiallelic,
     method: ThresholdMethod,
@@ -468,16 +471,16 @@ pub fn load_gwas_results_for_threshold(path: &str) -> Result<Vec<MarkerResult>> 
     Ok(results)
 }
 
-/// Calculate thresholds for methods that don't require genotype data (Bonferroni, FDR)
+/// Set thresholds for methods that don't require genotype data (Bonferroni, FDR)
 ///
-/// For M.eff, use `calculate_thresholds` instead which requires genotype data.
-pub fn calculate_thresholds_simple(
+/// For M.eff, use `set_threshold` instead which requires genotype data.
+pub fn set_threshold_simple(
     results: &[MarkerResult],
     method: ThresholdMethod,
     level: f64,
 ) -> Result<HashMap<String, ThresholdResult>> {
     if method == ThresholdMethod::Meff {
-        return Err(anyhow!("M.eff method requires genotype data. Use calculate_thresholds() with --geno instead."));
+        return Err(anyhow!("M.eff method requires genotype data. Use set_threshold() with --geno instead."));
     }
 
     // Group results by model

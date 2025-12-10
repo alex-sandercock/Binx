@@ -6,8 +6,6 @@ license = "GPL-3.0-or-later"
 description = "Rust implementation of R/rrBLUP package for mixed model analysis"
 
 [dependencies]
-binx-core = { path = "../binx-core" }
-binx-kinship = { path = "../binx-kinship" }
 ndarray = "0.15"
 nalgebra = "0.29"
 faer = "0.19"

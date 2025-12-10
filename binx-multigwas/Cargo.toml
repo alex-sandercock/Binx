@@ -7,4 +7,4 @@ description = "Multiallelic GWAS for binx"
 
 [dependencies]
 anyhow = "1"
-binx-core = { path = "../binx-core" }
+binx-types = { path = "../binx-types" }

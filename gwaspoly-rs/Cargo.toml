@@ -6,8 +6,7 @@ license = "GPL-3.0-or-later"
 description = "Rust implementation of R/GWASpoly package for GWAS in polyploids"
 
 [dependencies]
-binx-core = { path = "../binx-core" }
-binx-kinship = { path = "../binx-kinship" }
+# Standalone crate - only depends on rrblup-rs (mirrors R architecture where GWASpoly wraps rrBLUP)
 rrblup-rs = { path = "../rrblup-rs" }
 ndarray = "0.15"
 nalgebra = "0.29"

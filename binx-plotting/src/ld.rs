@@ -75,7 +75,7 @@ pub struct LDData {
 /// # Returns
 /// LDData containing raw points and binned averages
 pub fn calculate_ld_data(
-    geno: &binx_core::GenotypeMatrixBiallelic,
+    geno: &binx_types::GenotypeMatrixBiallelic,
     config: &LDPlotConfig,
 ) -> Result<LDData> {
     let metadata = geno
@@ -448,7 +448,7 @@ fn find_threshold_distance_smooth(curve: &[(f64, f64)], threshold: f64) -> Optio
 
 /// Generate LD decay plot
 pub fn ld_plot(
-    geno: &binx_core::GenotypeMatrixBiallelic,
+    geno: &binx_types::GenotypeMatrixBiallelic,
     output_path: &str,
     config: LDPlotConfig,
 ) -> Result<LDData> {
@@ -599,7 +599,7 @@ pub fn ld_plot_from_file(
     config: LDPlotConfig,
 ) -> Result<LDData> {
     eprintln!("Loading genotype data from {}...", geno_path);
-    let geno = binx_core::load_genotypes_biallelic_from_tsv(geno_path, ploidy)?;
+    let geno = binx_types::load_genotypes_biallelic_from_tsv(geno_path, ploidy)?;
     eprintln!(
         "Loaded {} markers x {} samples",
         geno.marker_ids.len(),

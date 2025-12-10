@@ -15,7 +15,7 @@ use statrs::distribution::{ContinuousCDF, FisherSnedecor};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use binx_core::GenotypeMatrixBiallelic;
+use crate::types::GenotypeMatrixBiallelic;
 use crate::gwaspoly::{GeneActionModel, GwasCache, MarkerResult};
 
 /// Test all markers in parallel using pre-computed null model cache.

@@ -2,7 +2,7 @@
 
 use nalgebra::DMatrix;
 use rrblup_rs::{
-    kin_blup, mixed_solve_new, KinBlupData, KinBlupOptions,
+    kin_blup, mixed_solve_reml, KinBlupData, KinBlupOptions,
 };
 use std::time::Instant;
 
@@ -84,7 +84,7 @@ fn main() {
         let y_clone = y.clone();
 
         benchmark(&format!("n={}, m={} markers", n, m), move || {
-            let _ = mixed_solve_new(
+            let _ = mixed_solve_reml(
                 &y_clone,
                 Some(&z_clone),
                 None,  // No K - use Z directly
@@ -124,7 +124,7 @@ fn main() {
         let y_clone = y.clone();
 
         benchmark(&format!("n={} genotypes, m={}", n, m), move || {
-            let _ = mixed_solve_new(
+            let _ = mixed_solve_reml(
                 &y_clone,
                 Some(&z_clone),
                 None,
@@ -176,7 +176,7 @@ fn main() {
         let x_clone = x.clone();
 
         benchmark(&format!("n={}", n), move || {
-            let _ = mixed_solve_new(
+            let _ = mixed_solve_reml(
                 &y_clone,
                 Some(&z_clone),
                 Some(&k_clone),

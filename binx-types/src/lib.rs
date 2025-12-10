@@ -1,4 +1,4 @@
-//! binx-core: shared data structures and I/O for the binx toolkit.
+//! binx-types: shared data structures and I/O for the binx toolkit.
 
 use anyhow::{anyhow, Result};
 use csv;

@@ -11,17 +11,13 @@
 //! - Support for repeated observations per genotype (multi-environment trials)
 
 use anyhow::{anyhow, Result};
-use binx_core::{
-    load_genotypes_biallelic_from_tsv, load_kinship_from_tsv,
-    load_phenotypes_from_tsv, GenotypeMatrixBiallelic, KinshipMatrix,
-};
-use binx_kinship::compute_kinship_gwaspoly;
+use crate::types::{GenotypeMatrixBiallelic, KinshipMatrix, PhenotypeTable};
+use crate::io::{load_genotypes, load_phenotypes, load_kinship};
+use crate::set_k::{set_k, compute_loco_kinship_gwaspoly};
 use nalgebra::{DMatrix, DVector};
 use ndarray::{Array1, Array2, Axis};
-use rrblup_rs::{mixed_solve_new, MixedSolveOptions};
-
-use crate::set_k::compute_loco_kinship_gwaspoly;
-use crate::threshold::{ThresholdMethod, calculate_thresholds, print_thresholds};
+use rrblup_rs::{mixed_solve_reml, MixedSolveOptions};
+use crate::threshold::{ThresholdMethod, set_threshold, print_thresholds};
 use statrs::distribution::{ContinuousCDF, FisherSnedecor};
 use std::collections::HashMap;
 
@@ -124,7 +120,7 @@ pub struct MarkerResult {
 
 /// Fit null mixed model using the validated rrblup-rs mixed_solve implementation.
 ///
-/// This wraps rrblup_rs::mixed_solve_new (Rust implementation of R/rrBLUP::mixed.solve)
+/// This wraps rrblup_rs::mixed_solve_reml (Rust implementation of R/rrBLUP::mixed.solve)
 /// for use in GWAS marker testing.
 pub(crate) fn fit_null_model(
     y: &Array1<f64>,
@@ -150,13 +146,13 @@ pub(crate) fn fit_null_model(
         DMatrix::from_fn(z_arr.nrows(), z_arr.ncols(), |i, j| z_arr[(i, j)])
     });
 
-    // Call validated mixed_solve_new with return_hinv=true
+    // Call validated mixed_solve_reml with return_hinv=true
     let opts = MixedSolveOptions {
         return_hinv: true,
         ..Default::default()
     };
 
-    let result = mixed_solve_new(
+    let result = mixed_solve_reml(
         &y_slice,
         z_dmat.as_ref(),
         Some(&k_dmat),
@@ -193,7 +189,10 @@ pub(crate) fn fit_null_model(
 /// If `threshold_method` is provided, the function will compute significance thresholds
 /// for each model using the specified method (Bonferroni, M.eff, or FDR) and include
 /// them in the output.
-pub fn run_gwaspoly(
+/// Run GWASpoly analysis (R/GWASpoly GWASpoly() equivalent).
+///
+/// This is the main entry point for GWAS analysis, mirroring R's `GWASpoly()`.
+pub fn gwaspoly(
     geno_path: &str,
     pheno_path: &str,
     trait_name: &str,
@@ -213,8 +212,8 @@ pub fn run_gwaspoly(
     alpha: f64,
 ) -> Result<()> {
     // Load data - don't filter by environment, include all observations
-    let geno_full = load_genotypes_biallelic_from_tsv(geno_path, ploidy)?;
-    let pheno = load_phenotypes_from_tsv(pheno_path)?;
+    let geno_full = load_genotypes(geno_path, ploidy)?;
+    let pheno = load_phenotypes(pheno_path)?;
 
     // Get unique genotype IDs that have phenotype data (following R/GWASpoly)
     // R/GWASpoly subsets genotypes to only those with phenotype observations
@@ -406,9 +405,9 @@ pub fn run_gwaspoly(
     } else {
         // Standard mode: single kinship matrix
         let kin = if let Some(k_path) = kinship_path {
-            load_kinship_from_tsv(k_path)?
+            load_kinship(k_path)?
         } else {
-            compute_kinship_gwaspoly(&geno)?
+            set_k(&geno)?
         };
         let kin_aligned = align_kinship_to_genotypes_owned(kin, &geno.sample_ids)?;
 
@@ -434,7 +433,7 @@ pub fn run_gwaspoly(
         eprintln!("DEBUG: y mean={:.4}, var={:.4}", y_mean, y_var);
 
         // Fit null model with Z matrix for repeated observations
-        // Note: We use the validated mixed_solve_new for accuracy.
+        // Note: We use the validated mixed_solve_reml for accuracy.
         // The speedup comes from parallel marker testing (rayon).
         let cache = fit_null_model(
             &y,
@@ -495,7 +494,7 @@ pub fn run_gwaspoly(
     if let Some(method) = threshold_method {
         eprintln!("Calculating {} thresholds (alpha={})...", method.as_str(), alpha);
 
-        let thresholds = calculate_thresholds(&all_results, &geno, method, alpha)?;
+        let thresholds = set_threshold(&all_results, &geno, method, alpha)?;
 
         // Print threshold summary to stderr
         print_thresholds(&thresholds);
@@ -904,7 +903,7 @@ pub(crate) fn lmm_score_test(
 
 /// Build base design matrix at observation level (n_obs × p)
 fn build_base_design_obs_level(
-    pheno: &binx_core::PhenotypeTable,
+    pheno: &PhenotypeTable,
     covariate_names: Option<&[String]>,
     obs_indices: &[usize],
     n_obs: usize,
