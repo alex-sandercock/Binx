@@ -3,6 +3,11 @@
 
 Rust command-line genomics workbench for diploid and polyploid species. `binx` targets GWAS-style analyses with a familiar UX: fast defaults, explicit inputs, and clear TSV/CSV outputs.
 
+This repo contains:
+- rrblup-rs: a faithful Rust port of R/rrBLUP’s mixed.solve and related routines
+- gwaspoly-rs: a faithful Rust port of R/GWASpoly
+- binx-*: crates that compose these into a multi-method GWAS CLI (binx gwas)
+
 ## Highlights
 
 - **GWASpoly-style GWAS** (`binx gwaspoly`) with eight genetic models for polyploids, validated against R/GWASpoly
