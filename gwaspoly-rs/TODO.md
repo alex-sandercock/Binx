@@ -41,3 +41,17 @@ binx gwaspoly --geno potato_geno.tsv --pheno potato_pheno.csv \
 - [ ] Compare curve shape visually with GWASpoly LD.plot
 - [ ] Evaluate if scam (shape-constrained additive model) approach is needed
 - [ ] Check if `n_bins` parameter still affects results inappropriately
+
+## Crate extraction
+
+These crates are "engines/methods" - CLI stays in Binx.
+
+### rrblup-rs
+- [ ] Extract rrblup-rs as a standalone crate/GitHub repo
+- [ ] Should remain faithful to R/rrBLUP originals
+- [ ] Binx will depend on this crate; new features/optimizations stay on Binx side
+
+### gwaspoly-rs
+- [ ] Extract gwaspoly-rs as a standalone crate/GitHub repo
+- [ ] Should remain faithful to R/GWASpoly originals
+- [ ] Binx will depend on this crate; new features/optimizations stay on Binx side
