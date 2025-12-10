@@ -23,11 +23,8 @@
 //! println!("Vu = {}, Ve = {}", result.vu, result.ve);
 //! ```
 
-// Module for mixed.solve function (new implementation)
+// Module for mixed.solve function
 pub mod mixed_solve;
-
-// Module for fast mixed.solve using faer eigendecomposition
-pub mod mixed_solve_fast;
 
 // Module for A.mat function
 pub mod a_mat;
@@ -39,9 +36,6 @@ pub mod kin_blup;
 pub use mixed_solve::{
     mixed_solve as mixed_solve_reml, Method, MixedSolveOptions, MixedSolveResult,
 };
-
-// Re-export fast mixed_solve
-pub use mixed_solve_fast::mixed_solve_fast;
 
 // Re-export main types and functions from a_mat
 pub use a_mat::{a_mat, AMatOptions, AMatResult, ImputeMethod, ShrinkConfig, ShrinkMethod};

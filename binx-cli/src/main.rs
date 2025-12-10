@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use std::cell::RefCell;
 use std::fs::File;
 use std::io::{BufRead, BufWriter, Write};
+use std::str::FromStr;
 use std::time::Instant;
 
 /// binx: a Rust-based genomic analysis toolkit
@@ -41,24 +42,26 @@ enum Commands {
         out: String,
     },
 
-    /// GWASpoly-style GWAS for polyploids with multiple genetic models
+    /// Run genome-wide association study
     #[command(after_help = "EXAMPLES:
     # Basic GWAS with additive model
-    binx gwaspoly --geno geno.tsv --pheno pheno.csv --trait_name yield --ploidy 4 --out results.csv
+    binx gwas --geno geno.tsv --pheno pheno.csv --trait yield --ploidy 4 --out results.csv
 
     # Multiple models with threshold calculation
-    binx gwaspoly --geno geno.tsv --pheno pheno.csv --trait_name yield --ploidy 4 \\
+    binx gwas --geno geno.tsv --pheno pheno.csv --trait yield --ploidy 4 \\
         --models additive,general --threshold m.eff --out results.csv
 
     # With kinship matrix and plots
-    binx gwaspoly --geno geno.tsv --pheno pheno.csv --trait_name yield --ploidy 4 \\
+    binx gwas --geno geno.tsv --pheno pheno.csv --trait yield --ploidy 4 \\
         --kinship kinship.tsv --plot both --out results.csv
 
-    # Filter by environment
-    binx gwaspoly --geno geno.tsv --pheno pheno.csv --trait_name yield --ploidy 4 \\
-        --env-column location --env-value field_A --out results.csv
+    # Use a different method (when available)
+    binx gwas --method gwaspoly --geno geno.tsv --pheno pheno.csv --trait yield --ploidy 4 --out results.csv
 
-MODELS:
+METHODS:
+    gwaspoly        GWASpoly-style GWAS for polyploids (default)
+
+MODELS (for gwaspoly method):
     additive        Linear effect of allele dosage
     general         Separate effect for each dosage class
     1-dom-ref       Single-dose dominance (reference)
@@ -67,7 +70,12 @@ MODELS:
     2-dom-alt       Double-dose dominance (alternate)
     diplo-general   Diploidized general
     diplo-additive  Diploidized additive")]
-    Gwaspoly {
+    Gwas {
+        // === Method ===
+        /// GWAS method to use
+        #[arg(long, default_value = "gwaspoly", help_heading = "Method")]
+        method: String,
+
         // === Input/Output ===
         /// Genotype dosage file (TSV: marker, chr, pos, samples...)
         #[arg(long, help_heading = "Input/Output")]
@@ -88,7 +96,7 @@ MODELS:
         // === Analysis ===
         /// Trait name to analyze
         #[arg(long, help_heading = "Analysis")]
-        trait_name: String,
+        r#trait: String,
 
         /// Ploidy level (e.g., 2, 4, 6)
         #[arg(long, help_heading = "Analysis")]
@@ -118,15 +126,6 @@ MODELS:
         /// Allow samples in geno but not in pheno
         #[arg(long, default_value_t = false, help_heading = "QC Filters")]
         allow_missing_samples: bool,
-
-        // === Environment ===
-        /// Column name to filter phenotype rows
-        #[arg(long, help_heading = "Environment")]
-        env_column: Option<String>,
-
-        /// Value to keep (used with --env-column)
-        #[arg(long, help_heading = "Environment")]
-        env_value: Option<String>,
 
         // === Threshold ===
         /// Method: bonferroni, m.eff, or fdr
@@ -459,15 +458,14 @@ fn main() -> Result<()> {
             // Print results
             gwaspoly_rs::print_thresholds(&thresholds);
         }
-        Commands::Gwaspoly {
+        Commands::Gwas {
+            method,
             geno,
             pheno,
-            trait_name,
+            r#trait,
             covariates,
             kinship,
             allow_missing_samples,
-            env_column,
-            env_value,
             ploidy,
             models,
             loco,
@@ -480,13 +478,19 @@ fn main() -> Result<()> {
             threshold,
             alpha,
         } => {
+            // Parse GWAS method
+            let gwas_method = binx_gwas::GwasMethod::from_str(&method).unwrap_or_else(|e| {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            });
+
             let covariate_list = covariates.as_deref().map(parse_csv_list);
-            let model_list: Vec<gwaspoly_rs::GeneActionModel> = models
+            let model_list: Vec<binx_gwas::GeneActionModel> = models
                 .split(',')
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
                 .map(|s| {
-                    gwaspoly_rs::GeneActionModel::from_str(s).unwrap_or_else(|e| {
+                    binx_gwas::GeneActionModel::from_str(s).unwrap_or_else(|e| {
                         eprintln!("Invalid model '{}': {}", s, e);
                         std::process::exit(1);
                     })
@@ -500,7 +504,7 @@ fn main() -> Result<()> {
 
             // Parse threshold method if provided
             let threshold_method = threshold.as_ref().map(|t| {
-                gwaspoly_rs::ThresholdMethod::from_str(t).unwrap_or_else(|e| {
+                binx_gwas::ThresholdMethod::from_str(t).unwrap_or_else(|e| {
                     eprintln!("{}", e);
                     std::process::exit(1);
                 })
@@ -509,15 +513,14 @@ fn main() -> Result<()> {
             if parallel {
                 eprintln!("Using parallel marker testing...");
             }
-            gwaspoly_rs::gwaspoly(
+            eprintln!("Running GWAS with method: {}", gwas_method);
+            binx_gwas::run_gwas(
                 &geno,
                 &pheno,
-                &trait_name,
+                &r#trait,
                 covariate_list.as_deref(),
                 kinship.as_deref(),
                 allow_missing_samples,
-                env_column.as_deref(),
-                env_value.as_deref(),
                 ploidy,
                 &model_list,
                 loco,
@@ -527,6 +530,7 @@ fn main() -> Result<()> {
                 parallel,
                 threshold_method,
                 alpha,
+                gwas_method,
             )?;
 
             // Generate plots if requested

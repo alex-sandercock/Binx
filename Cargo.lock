@@ -126,6 +126,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "binx-dosage",
+ "binx-gwas",
  "binx-kinship",
  "binx-multigwas",
  "binx-plotting",
@@ -165,6 +166,7 @@ name = "binx-gwas"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "gwaspoly-rs",
  "ndarray",
  "tempfile",
 ]

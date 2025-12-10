@@ -8,6 +8,7 @@ description = "GWAS orchestration and workflow management for binx"
 [dependencies]
 anyhow = "1"
 ndarray = "0.15"
+gwaspoly-rs = { path = "../gwaspoly-rs" }
 
 [dev-dependencies]
 tempfile = "3"

@@ -17,6 +17,7 @@ binx-multigwas = { path = "../binx-multigwas" }
 binx-kinship = { path = "../binx-kinship" }
 binx-dosage = { path = "../binx-dosage" }
 binx-plotting = { path = "../binx-plotting" }
+binx-gwas = { path = "../binx-gwas" }
 gwaspoly-rs = { path = "../gwaspoly-rs" }
 
 [dev-dependencies]
