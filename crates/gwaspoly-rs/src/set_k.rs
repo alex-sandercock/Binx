@@ -236,6 +236,7 @@ pub fn compute_loco_kinship_gwaspoly(
 
     for chrom in per_chrom_k.keys() {
         let loco_k = make_loco_kinship(&per_chrom_k, chrom)?;
+
         loco_kinships.insert(
             chrom.clone(),
             KinshipMatrix {

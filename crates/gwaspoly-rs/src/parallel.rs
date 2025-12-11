@@ -7,16 +7,14 @@
 //! where variance components and H_inv are pre-computed once, then each marker
 //! is tested independently in parallel.
 
-use anyhow::{anyhow, Result};
-use nalgebra::{DMatrix, DVector};
+use anyhow::Result;
 use ndarray::{Array1, Axis};
 use rayon::prelude::*;
-use statrs::distribution::{ContinuousCDF, FisherSnedecor};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::types::GenotypeMatrixBiallelic;
-use crate::gwaspoly::{GeneActionModel, GwasCache, MarkerResult};
+use crate::gwaspoly::{GeneActionModel, GwasCache, MarkerResult, lmm_score_test};
 
 /// Test all markers in parallel using pre-computed null model cache.
 ///
@@ -191,7 +189,7 @@ fn test_marker_parallel(
             .collect();
 
         let (score, p_value, effect) =
-            lmm_score_test_parallel(&marker_design_obs, y, base_design, cache)?;
+            lmm_score_test(&marker_design_obs, y, base_design, cache)?;
 
         results.push(MarkerResult {
             marker_id: marker_id.clone(),
@@ -400,106 +398,6 @@ fn check_binary_column_parallel(col: &[f64], max_geno_freq: f64) -> Option<()> {
         return None;
     }
     Some(())
-}
-
-/// LMM score test (parallel-safe version)
-fn lmm_score_test_parallel(
-    marker_design: &[Vec<f64>],
-    y: &Array1<f64>,
-    base_design: &[Vec<f64>],
-    cache: &GwasCache,
-) -> Result<(f64, f64, Option<f64>)> {
-    let n = y.len();
-    let p0 = base_design.len();
-    let p_marker = marker_design.len();
-
-    if p_marker == 0 {
-        return Err(anyhow!("Empty marker design"));
-    }
-
-    let p = p0 + p_marker;
-    let mut data = Vec::with_capacity(n * p);
-    for row in 0..n {
-        for col in base_design {
-            data.push(col[row]);
-        }
-        for col in marker_design {
-            data.push(col[row]);
-        }
-    }
-    let x = DMatrix::from_row_slice(n, p, &data);
-
-    let y_vec = DVector::from_row_slice(
-        y.as_slice().ok_or_else(|| anyhow!("y not contiguous"))?,
-    );
-
-    // W = X' H^-1 X
-    let w = &x.transpose() * &cache.h_inv * &x;
-    let w_inv = match w.clone().try_inverse() {
-        Some(inv) => inv,
-        None => {
-            let mut w_eps = w.clone();
-            for i in 0..p {
-                w_eps[(i, i)] += 1e-8;
-            }
-            w_eps.try_inverse().ok_or_else(|| anyhow!("W not invertible"))?
-        }
-    };
-
-    // beta = W^-1 X' H^-1 y
-    let beta = &w_inv * (&x.transpose() * &cache.h_inv * &y_vec);
-
-    // Residual variance
-    let resid = &y_vec - &x * &beta;
-    let v2 = (n as f64) - (p as f64);
-    if v2 <= 0.0 {
-        return Err(anyhow!("Degrees of freedom <= 0"));
-    }
-    let s2 = (resid.transpose() * &cache.h_inv * &resid)[(0, 0)] / v2;
-
-    // Extract marker portion
-    let marker_beta = beta.rows(p0, p_marker).into_owned();
-    let w_marker = w_inv.slice((p0, p0), (p_marker, p_marker)).into_owned();
-
-    let inv_w_marker = match w_marker.clone().try_inverse() {
-        Some(m) => m,
-        None => {
-            let mut jittered = w_marker.clone();
-            for i in 0..p_marker {
-                jittered[(i, i)] += 1e-8;
-            }
-            jittered
-                .try_inverse()
-                .ok_or_else(|| anyhow!("W_marker not invertible"))?
-        }
-    };
-
-    // F-statistic
-    let denom = s2 * (p_marker as f64);
-    let f_stat = if denom > 0.0 {
-        (marker_beta.transpose() * &inv_w_marker * &marker_beta)[(0, 0)] / denom
-    } else {
-        0.0
-    };
-
-    // P-value
-    let p_value = if f_stat.is_finite() && f_stat >= 0.0 {
-        let f_dist = FisherSnedecor::new(p_marker as f64, v2)?;
-        (1.0 - f_dist.cdf(f_stat)).max(0.0)
-    } else {
-        1.0
-    };
-
-    let p_clamped = p_value.max(f64::MIN_POSITIVE);
-    let score = -p_clamped.log10();
-
-    let effect = if p_marker == 1 {
-        Some(marker_beta[0])
-    } else {
-        None
-    };
-
-    Ok((score, p_value, effect))
 }
 
 #[cfg(test)]

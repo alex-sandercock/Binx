@@ -18,7 +18,7 @@ use nalgebra::{DMatrix, DVector};
 use ndarray::{Array1, Array2, Axis};
 use rrblup_rs::{mixed_solve_reml, MixedSolveOptions};
 use crate::threshold::{ThresholdMethod, set_threshold, print_thresholds};
-use statrs::distribution::{ContinuousCDF, FisherSnedecor};
+use statrs::function::beta::beta_reg;
 use std::collections::HashMap;
 
 use crate::parallel;
@@ -255,9 +255,6 @@ pub fn gwaspoly(
         dosages: dosages_subset,
     };
 
-    eprintln!("DEBUG: Subsetted genotypes from {} to {} samples (matching phenotype)",
-              geno_full.sample_ids.len(), n_ind);
-
     // Build mapping from phenotype observations to genotypes
     // This follows R/GWASpoly: Z[cbind(1:n, match(pheno.gid, geno.gid))] <- 1
     let mut obs_indices: Vec<usize> = Vec::new();      // Which pheno rows to keep
@@ -487,27 +484,6 @@ pub fn gwaspoly(
         };
         let kin_aligned = align_kinship_to_genotypes_owned(kin, &geno.sample_ids)?;
 
-        // Debug: print dimensions and sample IDs
-        eprintln!("DEBUG: n_obs={}, n_ind={}, y.len()={}, x0.shape={:?}, z_mat.shape={:?}, kin.shape={:?}",
-            n_obs, n_ind, y.len(), x0.shape(), z_mat.shape(), kin_aligned.matrix.shape());
-
-        // Check kinship diagonal
-        let kin_diag_mean = (0..n_ind).map(|i| kin_aligned.matrix[(i, i)]).sum::<f64>() / n_ind as f64;
-        let kin_diag_min = (0..n_ind).map(|i| kin_aligned.matrix[(i, i)]).fold(f64::INFINITY, f64::min);
-        let kin_diag_max = (0..n_ind).map(|i| kin_aligned.matrix[(i, i)]).fold(f64::NEG_INFINITY, f64::max);
-        eprintln!("DEBUG: Kinship diagonal: mean={:.4}, min={:.4}, max={:.4}", kin_diag_mean, kin_diag_min, kin_diag_max);
-
-        // Check Z matrix row sums (should all be 1.0)
-        let z_row_sum_first5: Vec<f64> = (0..5.min(n_obs)).map(|i| {
-            (0..n_ind).map(|j| z_mat[(i, j)]).sum()
-        }).collect();
-        eprintln!("DEBUG: Z matrix row sums (first 5): {:?}", z_row_sum_first5);
-
-        // Check y variance
-        let y_mean = y.iter().sum::<f64>() / n_obs as f64;
-        let y_var = y.iter().map(|v| (v - y_mean).powi(2)).sum::<f64>() / (n_obs - 1) as f64;
-        eprintln!("DEBUG: y mean={:.4}, var={:.4}", y_mean, y_var);
-
         // Fit null model with Z matrix for repeated observations
         // Note: We use the validated mixed_solve_reml for accuracy.
         // The speedup comes from parallel marker testing (rayon).
@@ -518,18 +494,6 @@ pub fn gwaspoly(
             Some(&z_mat),
             Some(&obs_sample_ids)
         )?;
-
-        // Debug: print variance components
-        eprintln!("DEBUG: lambda={}, vu={}, ve={}, sigma2={}", cache.lambda, cache.vu, cache.ve, cache.sigma2);
-
-        // Debug: print H_inv corner values for comparison with R
-        eprintln!("DEBUG: H_inv[0:3,0:3]:");
-        for i in 0..3.min(cache.h_inv.nrows()) {
-            let row: Vec<f64> = (0..3.min(cache.h_inv.ncols()))
-                .map(|j| cache.h_inv[(i, j)])
-                .collect();
-            eprintln!("  {:?}", row);
-        }
 
         // Test all markers (parallel or sequential)
         if use_parallel {
@@ -950,10 +914,14 @@ pub(crate) fn lmm_score_test(
         0.0
     };
 
-    // P-value from F distribution
-    let p_value = if f_stat.is_finite() && f_stat >= 0.0 {
-        let f_dist = FisherSnedecor::new(p_marker as f64, v2)?;
-        (1.0 - f_dist.cdf(f_stat)).max(0.0)
+    // P-value: compute F-distribution upper tail directly using regularized incomplete beta function
+    // P(F > x) = I_z(d2/2, d1/2) where z = d2/(d1*x + d2)
+    // This avoids precision loss from 1.0 - CDF for extreme p-values (e.g., 1e-19)
+    let p_value = if f_stat.is_finite() && f_stat > 0.0 {
+        let d1 = p_marker as f64;
+        let d2 = v2;
+        let z = d2 / (d1 * f_stat + d2);
+        beta_reg(d2 / 2.0, d1 / 2.0, z)
     } else {
         1.0
     };
