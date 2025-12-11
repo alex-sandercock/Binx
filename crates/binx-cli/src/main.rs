@@ -114,6 +114,10 @@ MODELS (for gwaspoly method):
         #[arg(long, help_heading = "Analysis")]
         covariates: Option<String>,
 
+        /// Number of principal components to include as fixed effects (P+K model)
+        #[arg(long, default_value = "0", help_heading = "Analysis")]
+        n_pc: usize,
+
         // === QC Filters ===
         /// Minimum minor allele frequency (0.0-0.5)
         #[arg(long, default_value = "0.0", help_heading = "QC Filters")]
@@ -464,6 +468,7 @@ fn main() -> Result<()> {
             pheno,
             r#trait,
             covariates,
+            n_pc,
             kinship,
             allow_missing_samples,
             ploidy,
@@ -513,6 +518,9 @@ fn main() -> Result<()> {
             if parallel {
                 eprintln!("Using parallel marker testing...");
             }
+            if n_pc > 0 {
+                eprintln!("Including {} principal components as fixed effects (P+K model)", n_pc);
+            }
             eprintln!("Running GWAS with method: {}", gwas_method);
             binx_gwas::run_gwas(
                 &geno,
@@ -531,6 +539,7 @@ fn main() -> Result<()> {
                 threshold_method,
                 alpha,
                 gwas_method,
+                n_pc,
             )?;
 
             // Generate plots if requested

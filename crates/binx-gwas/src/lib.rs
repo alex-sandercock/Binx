@@ -68,6 +68,7 @@ pub fn run_gwas(
     threshold_method: Option<ThresholdMethod>,
     alpha: f64,
     method: GwasMethod,
+    n_pc: usize,
 ) -> Result<()> {
     match method {
         GwasMethod::Gwaspoly => {
@@ -89,6 +90,7 @@ pub fn run_gwas(
                 use_parallel,
                 threshold_method,
                 alpha,
+                n_pc,
             )
         }
     }

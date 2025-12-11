@@ -210,6 +210,7 @@ pub fn gwaspoly(
     use_parallel: bool,
     threshold_method: Option<ThresholdMethod>,
     alpha: f64,
+    n_pc: usize,
 ) -> Result<()> {
     // Load data - don't filter by environment, include all observations
     let geno_full = load_genotypes(geno_path, ploidy)?;
@@ -314,12 +315,87 @@ pub fn gwaspoly(
     }
 
     // Build base design matrix X (n_obs × p) with intercept and covariates
-    let base_design = build_base_design_obs_level(
+    let mut base_design = build_base_design_obs_level(
         &pheno,
         covariate_names,
         &obs_indices,
         n_obs,
     )?;
+
+    // Add principal components to base design if n_pc > 0 (P+K model)
+    // This matches R/GWASpoly: X <- cbind(X, Z %*% eig.vec[,1:params$n.PC])
+    if n_pc > 0 {
+        eprintln!("Computing {} principal components from kinship matrix...", n_pc);
+
+        // Get kinship matrix for PC extraction
+        // For LOCO: use average of all per-chromosome kinships (makeLOCO with exclude=integer(0)))
+        // For non-LOCO: use the single kinship matrix
+        let k_for_pcs: Array2<f64> = if loco {
+            // Compute per-chromosome kinships and average them
+            let loco_kins = compute_loco_kinship_gwaspoly(&geno)?;
+            let n_chroms = loco_kins.len();
+            if n_chroms == 0 {
+                return Err(anyhow!("No chromosomes found for LOCO kinship"));
+            }
+            let mut avg_k = Array2::<f64>::zeros((n_ind, n_ind));
+            for k in loco_kins.values() {
+                // Align kinship to match geno sample order
+                let k_aligned = align_kinship_to_genotypes_clone(k, &geno.sample_ids)?;
+                avg_k = avg_k + &k_aligned.matrix;
+            }
+            avg_k / n_chroms as f64
+        } else {
+            // Use single kinship (compute if not provided)
+            let kin = if let Some(k_path) = kinship_path {
+                load_kinship(k_path)?
+            } else {
+                set_k(&geno)?
+            };
+            let kin_aligned = align_kinship_to_genotypes_owned(kin, &geno.sample_ids)?;
+            kin_aligned.matrix
+        };
+
+        // Compute eigendecomposition of K
+        // nalgebra DMatrix is needed for symmetric_eigen
+        let k_dm = DMatrix::from_iterator(n_ind, n_ind, k_for_pcs.iter().cloned());
+        let eigen = k_dm.symmetric_eigen();
+
+        // IMPORTANT: nalgebra symmetric_eigen does NOT sort eigenvalues - they're in arbitrary order
+        // We must sort them ourselves to get the top n_pc (largest eigenvalues)
+        let n_eig = eigen.eigenvalues.len();
+        if n_pc > n_eig {
+            return Err(anyhow!("Requested {} PCs but only {} eigenvalues available", n_pc, n_eig));
+        }
+
+        // Create (eigenvalue, index) pairs and sort by eigenvalue descending
+        let mut eig_pairs: Vec<(f64, usize)> = eigen.eigenvalues.iter()
+            .cloned()
+            .enumerate()
+            .map(|(i, v)| (v, i))
+            .collect();
+        eig_pairs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        eprintln!("Top {} eigenvalues: {:?}", n_pc,
+            eig_pairs.iter().take(n_pc).map(|(v, _)| *v).collect::<Vec<_>>());
+
+        // Extract top n_pc eigenvectors using sorted indices
+        for pc_idx in 0..n_pc {
+            let (_, col_idx) = eig_pairs[pc_idx];
+            let eigvec: Vec<f64> = eigen.eigenvectors.column(col_idx).iter().cloned().collect();
+
+            // Map genotype-level PC to observation-level via Z matrix: pc_obs = Z @ pc_geno
+            let pc_obs: Vec<f64> = (0..n_obs)
+                .map(|obs_i| {
+                    let geno_idx = obs_to_geno[obs_i];
+                    eigvec[geno_idx]
+                })
+                .collect();
+
+            base_design.push(pc_obs);
+        }
+        eprintln!("Added {} PC columns to design matrix (now {} columns)", n_pc, base_design.len());
+    }
+
     let x0 = base_design_to_array2(&base_design)?;
 
     let n_genotypes_for_qc = n_ind;

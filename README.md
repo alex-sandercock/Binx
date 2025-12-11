@@ -88,6 +88,7 @@ GWASpoly-style GWAS for polyploids with multiple genetic models. Uses validated 
 - `--kinship <file>` — Pre-computed kinship matrix (auto-computed if omitted)
 - `--models <list>` — Comma-separated models: `additive`, `general`, `1-dom-ref`, `1-dom-alt`, `2-dom-ref`, `2-dom-alt`, `diplo-general`, `diplo-additive` (default: `additive,general`)
 - `--covariates <list>` — Comma-separated covariate column names (equivalent to R/GWASpoly's `set.params(fixed=..., fixed.type=...)` — include any fixed effects used in R here)
+- `--n-pc <int>` — Number of principal components to include as fixed effects (P+K model, equivalent to R/GWASpoly's `set.params(n.PC=...)`)
 - `--loco` — Enable Leave-One-Chromosome-Out kinship
 - `--min-maf <float>` — Minimum minor allele frequency filter
 - `--max-geno-freq <float>` — Maximum genotype frequency for QC
