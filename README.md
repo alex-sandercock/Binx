@@ -90,6 +90,9 @@ binx convert \
 | `binx kinship` | Compute kinship matrix (VanRaden method) |
 | `binx dosage` | Estimate genotype dosages from read counts |
 | `binx convert` | Convert VCF to other formats |
+| `binx plot` | Generate Manhattan, QQ, or LD decay plots |
+| `binx qtl` | Identify significant QTLs from GWAS results |
+| `binx threshold` | Calculate significance thresholds (Bonferroni, M.eff, FDR) |
 
 Run `binx <command> --help` for full options.
 
