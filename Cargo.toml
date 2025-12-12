@@ -1,14 +1,16 @@
 [workspace]
 members = [
-    "binx-core",
-    "binx-multigwas",
-    "binx-kinship",
-    "binx-cli",
-    "binx-dosage",
-    "binx-convert",
-    "binx-plotting",
-    "rrblup-rs",
-    "gwaspoly-rs",
+    "crates/binx-types",
+    "crates/binx-io",
+    "crates/binx-gwas",
+    "crates/binx-multigwas",
+    "crates/binx-kinship",
+    "crates/binx-cli",
+    "crates/binx-dosage",
+    "crates/binx-convert",
+    "crates/binx-plotting",
+    "crates/rrblup-rs",
+    "crates/gwaspoly-rs",
 ]
 
 resolver = "2"

@@ -3,9 +3,14 @@
 
 Rust command-line genomics workbench for diploid and polyploid species. `binx` targets GWAS-style analyses with a familiar UX: fast defaults, explicit inputs, and clear TSV/CSV outputs.
 
+This repo contains:
+- rrblup-rs: a faithful Rust port of R/rrBLUP’s mixed.solve and related routines
+- gwaspoly-rs: a faithful Rust port of R/GWASpoly
+- binx-*: crates that compose these into a multi-method GWAS CLI (binx gwas)
+
 ## Highlights
 
-- **GWASpoly-style GWAS** (`binx gwaspoly`) with eight genetic models for polyploids, validated against R/GWASpoly
+- **GWASpoly-style GWAS** (`binx gwas`) with eight genetic models for polyploids, validated against R/GWASpoly
 - **Accurate mixed model fitting** via rrblup-rs, a Rust implementation of R/rrBLUP's `mixed.solve`
 - **Genotype dosage estimation** (`binx dosage`) from VCF or read count data using updog-style algorithms
 - **Kinship matrix computation** (`binx kinship`) via VanRaden or GWASpoly methods
@@ -14,17 +19,17 @@ Rust command-line genomics workbench for diploid and polyploid species. `binx` t
 - Handles repeated phenotype IDs (multi-environment trials) and LOCO (Leave-One-Chromosome-Out)
 
 ## TODO
-- Fix GWASpoly LOCO (results not matching R/GWASpoly LOCO)
-- Fix GWASpoly handling of covariates (default seems to already account for them?)
-- Fix the faer implementations in rrblup-rs mixed_solve_fast
-- Construct <code style="color : red">fastgwas</code> which would be a much faster polyploid GWAS, with slight accuracy loss.
-- Frame out <code style="color : red">multigwas</code> which would support multiallelic loci in a GWAS
-- Draft mdbooks pages and deploy to readthedocs or github pages
-- Clean up/Update documentation and comments within codebase
-- Upload package to crates.io
-- Ensure licenses are updated and references to GWASpoly, Updog, and rrBLUP are present
-- Comprehensive benchmarking against R (<code style="color : red">and python rrBLUP</code>) implementations
-- Upload to homebrew?
+- Implement `fastgwas` method - faster polyploid GWAS with slight accuracy trade-off
+- Frame out `multigwas` for multiallelic GWAS
+- Draft mdbook pages and deploy to GitHub Pages
+- Clean up documentation and comments
+- Upload packages to crates.io
+- Ensure licenses and references to GWASpoly, Updog, and rrBLUP are present
+
+## Completed
+- ✓ GWASpoly LOCO validated against R/GWASpoly (all configurations match)
+- ✓ GWASpoly covariates validated against R/GWASpoly
+- ✓ Comprehensive benchmarking: LOCO/non-LOCO × PCs/no-PCs × additive/general models all match R
 
 ## Installation
 
@@ -48,10 +53,10 @@ binx kinship \
   --out kinship.tsv
 
 # 2) Run GWASpoly-style GWAS with multiple genetic models
-binx gwaspoly \
+binx gwas \
   --geno data/genotypes.tsv \
   --pheno data/phenotypes.csv \
-  --trait-name yield \
+  --trait yield \
   --ploidy 4 \
   --kinship kinship.tsv \
   --models additive,general \
@@ -71,24 +76,27 @@ binx convert \
 
 ## Command Reference
 
-### binx gwaspoly
+### binx gwas
 GWASpoly-style GWAS for polyploids with multiple genetic models. Uses validated rrblup-rs mixed model solver.
 
 **Required:**
 - `--geno <file>` — Genotype dosage file (TSV/CSV)
 - `--pheno <file>` — Phenotype file (TSV/CSV)
-- `--trait-name <name>` — Trait column to analyze
+- `--trait <name>` — Trait column to analyze
 - `--ploidy <int>` — Ploidy level (2, 4, 6, etc.)
 - `--out <file>` — Output results file
 
 **Optional:**
+- `--method <method>` — GWAS method (default: `gwaspoly`)
 - `--kinship <file>` — Pre-computed kinship matrix (auto-computed if omitted)
 - `--models <list>` — Comma-separated models: `additive`, `general`, `1-dom-ref`, `1-dom-alt`, `2-dom-ref`, `2-dom-alt`, `diplo-general`, `diplo-additive` (default: `additive,general`)
 - `--covariates <list>` — Comma-separated covariate column names
+- `--n-pc <int>` — Number of principal components to include as fixed effects (P+K model)
 - `--loco` — Enable Leave-One-Chromosome-Out kinship
+- `--parallel` — Use parallel marker testing for faster performance
 - `--min-maf <float>` — Minimum minor allele frequency filter
 - `--max-geno-freq <float>` — Maximum genotype frequency for QC
-- `--env-column <col>` + `--env-value <val>` — Filter phenotype rows by environment
+- `--threshold <method>` — Significance threshold: `bonferroni`, `m.eff`, or `fdr`
 - `--allow-missing-samples` — Allow samples in genotypes missing from phenotypes
 
 **Output:** CSV with `marker_id`, `chrom`, `pos`, `model`, `score` (-log10 p), `p_value`, `effect`, `n_obs`
@@ -183,13 +191,23 @@ Binx is organized as a Cargo workspace with specialized crates:
 
 ## Validation
 
-The mixed model implementation in `rrblup-rs` has been validated against R/rrBLUP with 52 test cases covering:
+### rrblup-rs
+Validated against R/rrBLUP with 52 test cases covering:
 - Variance component estimation (REML)
 - Fixed and random effect predictions
 - Kinship matrix handling
 - Missing data handling
 
 Results match R to 5-6 decimal places.
+
+### gwaspoly-rs
+Validated against R/GWASpoly across all configurations:
+- LOCO and non-LOCO kinship
+- With and without principal components (P+K model)
+- Multiple genetic models (additive, general)
+- With and without covariates
+
+Results match R/GWASpoly to 4-5 decimal places.
 
 ## License
 
