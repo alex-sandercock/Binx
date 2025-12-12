@@ -94,6 +94,11 @@ jobs:
             tar -xzf binx-*.tar.gz
             ./binx --help
             ```
+
+            **macOS users:** If you see "developer cannot be verified", run:
+            ```bash
+            xattr -d com.apple.quarantine binx
+            ```
           files: |
             binx-linux-x86_64/*.tar.gz
             binx-macos-x86_64/*.tar.gz
