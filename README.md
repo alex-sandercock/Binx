@@ -20,7 +20,26 @@ This repo contains:
 
 ## Installation
 
-Requires a Rust toolchain (`cargo` + `rustc`).
+### Pre-built Binaries (Recommended)
+Download the latest release for your platform from [Releases](https://github.com/alex-sandercock/Binx/releases):
+- `binx-linux-x86_64.tar.gz` — Linux
+- `binx-macos-x86_64.tar.gz` — macOS (Intel)
+- `binx-macos-aarch64.tar.gz` — macOS (Apple Silicon)
+
+```bash
+# Download and extract (example: Linux)
+curl -LO https://github.com/alex-sandercock/Binx/releases/latest/download/binx-linux-x86_64.tar.gz
+tar -xzf binx-linux-x86_64.tar.gz
+./binx --help
+
+# Optional: install to PATH
+mkdir -p ~/bin && mv binx ~/bin/
+# Add to PATH if not already (add to ~/.bashrc or ~/.zshrc):
+# export PATH="$HOME/bin:$PATH"
+```
+
+### Build from Source
+Requires Rust toolchain (`cargo` + `rustc`).
 
 ```bash
 # Build locally (binary at target/release/binx)
@@ -132,9 +151,6 @@ Convert VCF to other formats.
   - `gwaspoly` — GWASpoly genotype format with dosages from GT field
 - `--verbose` — Show progress
 
-### binx multigwas
-Multiallelic GWAS (stub for future development).
-
 ## Input Formats
 
 ### Genotypes (TSV/CSV)
@@ -170,7 +186,7 @@ Binx is organized as a Cargo workspace with specialized crates:
 | Crate | Description |
 |-------|-------------|
 | `binx-cli` | Main CLI binary (`binx`) |
-| `binx-core` | Core data structures and I/O utilities |
+| `binx-types` | Core data structures and I/O utilities |
 | `binx-kinship` | Kinship matrix computation |
 | `binx-dosage` | Genotype dosage estimation (updog-style) |
 | `gwaspoly-rs` | GWASpoly GWAS implementation |
