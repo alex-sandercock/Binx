@@ -3,7 +3,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![CI](https://github.com/alex-sandercock/Binx/actions/workflows/release.yml/badge.svg)](https://github.com/alex-sandercock/Binx/actions/workflows/release.yml)
 
-Rust command-line genomics workbench for diploid and polyploid species. `binx` targets GWAS-style analyses with a familiar UX: fast defaults, explicit inputs, and clear TSV/CSV outputs.
+Rust command-line genomics workbench for diploid and polyploid species. `binx` targets GWAS and related analyses with a familiar UX: fast defaults, explicit inputs, and clear TSV/CSV outputs.
 
 This repo contains:
 - rrblup-rs: a faithful Rust port of R/rrBLUP’s mixed.solve and related routines
@@ -14,8 +14,8 @@ This repo contains:
 
 - **GWASpoly-style GWAS** (`binx gwas`) with eight genetic models for polyploids, validated against R/GWASpoly
 - **Accurate mixed model fitting** via rrblup-rs, a Rust implementation of R/rrBLUP's `mixed.solve`
-- **Genotype dosage estimation** (`binx dosage`) from VCF or read count data using updog-style algorithms
-- **Kinship matrix computation** (`binx kinship`) via VanRaden or GWASpoly methods
+- **Genotype dosage estimation** (`binx dosage`) from VCF or read count data using R/Updog-based algorithms
+- **Kinship matrix computation** (`binx kinship`) via VanRaden methods
 - **VCF conversion** (`binx convert`) to Binx two-line CSV format
 - Polyploid-aware: supports ploidy levels 2, 4, 6, etc.
 - Handles repeated phenotype IDs (multi-environment trials) and LOCO (Leave-One-Chromosome-Out)
