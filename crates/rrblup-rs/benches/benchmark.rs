@@ -151,7 +151,7 @@ fn main() {
         let p = 50usize;
 
         // Generate X matrix (intercept + p-1 random columns)
-        let x = DMatrix::from_fn(n, p, |i, j| {
+        let x = DMatrix::from_fn(n, p, |_i, j| {
             if j == 0 { 1.0 } else { rng.gen::<f64>() * 2.0 - 1.0 }
         });
 

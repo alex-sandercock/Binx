@@ -18,19 +18,6 @@ This repo contains:
 - Polyploid-aware: supports ploidy levels 2, 4, 6, etc.
 - Handles repeated phenotype IDs (multi-environment trials) and LOCO (Leave-One-Chromosome-Out)
 
-## TODO
-- Implement `fastgwas` method - faster polyploid GWAS with slight accuracy trade-off
-- Frame out `multigwas` for multiallelic GWAS
-- Draft mdbook pages and deploy to GitHub Pages
-- Clean up documentation and comments
-- Upload packages to crates.io
-- Ensure licenses and references to GWASpoly, Updog, and rrBLUP are present
-
-## Completed
-- ✓ GWASpoly LOCO validated against R/GWASpoly (all configurations match)
-- ✓ GWASpoly covariates validated against R/GWASpoly
-- ✓ Comprehensive benchmarking: LOCO/non-LOCO × PCs/no-PCs × additive/general models all match R
-
 ## Installation
 
 Requires a Rust toolchain (`cargo` + `rustc`).
@@ -208,6 +195,20 @@ Validated against R/GWASpoly across all configurations:
 - With and without covariates
 
 Results match R/GWASpoly to 4-5 decimal places.
+
+## Citation
+
+If Binx is useful in your work, please cite the original methods:
+
+> Endelman, J.B. (2011). Ridge regression and other kernels for genomic selection with R package rrBLUP. *The Plant Genome* 4:250-255.
+
+> Rosyara, U.R., De Jong, W.S., Douches, D.S., & Endelman, J.B. (2016). Software for genome-wide association studies in autopolyploids and its application to potato. *The Plant Genome* 9(2).
+
+You may also cite the Binx implementation:
+
+> Sandercock, A.M. (2025). Binx: A Rust-based CLI tool for polyploid and diploid genomic analysis. GitHub repository: https://github.com/alex-sandercock/Binx
+
+*(A formal article/DOI is planned; this section will be updated when available.)*
 
 ## License
 

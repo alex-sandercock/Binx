@@ -1,11 +1,30 @@
 //! Rust implementation of R/rrBLUP::A.mat
 //!
-//! This module provides a direct translation of the A.mat function from
-//! the R/rrBLUP package. The implementation follows the original R code structure
-//! as closely as possible for verification and maintainability.
+//! This module computes the additive relationship matrix from marker data,
+//! following the VanRaden (2008) method as implemented in R/rrBLUP.
 //!
-//! Reference: R/rrBLUP package by Jeffrey Endelman
-//! https://cran.r-project.org/package=rrBLUP
+//! # Example
+//!
+//! ```
+//! use rrblup_rs::a_mat::{a_mat, AMatOptions};
+//! use nalgebra::DMatrix;
+//!
+//! // Genotype matrix: 3 individuals x 4 markers, coded as {-1, 0, 1}
+//! let geno = DMatrix::from_row_slice(3, 4, &[
+//!     -1.0,  0.0,  1.0,  0.0,
+//!      0.0,  1.0, -1.0,  1.0,
+//!      1.0, -1.0,  0.0, -1.0,
+//! ]);
+//!
+//! let result = a_mat(&geno, None).unwrap();
+//! assert_eq!(result.a.nrows(), 3);
+//! assert_eq!(result.a.ncols(), 3);
+//! ```
+//!
+//! # Reference
+//!
+//! R/rrBLUP package by Jeffrey Endelman:
+//! <https://cran.r-project.org/package=rrBLUP>
 
 use anyhow::{anyhow, Result};
 use nalgebra::{DMatrix, DVector};
@@ -98,15 +117,41 @@ pub struct AMatResult {
 /// This is a Rust implementation of R/rrBLUP::A.mat().
 ///
 /// # Arguments
+///
 /// * `x` - Genotype matrix (n individuals x m markers) with values in {-1, 0, 1}
-///         where -1 = homozygous for allele 1, 0 = heterozygous, 1 = homozygous for allele 2
-///         Missing values should be NaN
+///         where -1 = homozygous for allele 1, 0 = heterozygous, 1 = homozygous for allele 2.
+///         Missing values should be `NaN`.
 /// * `options` - Optional settings (min.MAF, max.missing, impute.method, etc.)
 ///
 /// # Returns
-/// * AMatResult containing the relationship matrix and optionally the imputed genotypes
+///
+/// [`AMatResult`] containing the relationship matrix and optionally the imputed genotypes.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Genotype matrix is empty (zero rows or columns)
+/// - No markers pass MAF/missing filters
+/// - Genetic variance (`var.A`) is zero (all markers monomorphic)
+///
+/// # Example
+///
+/// ```
+/// use rrblup_rs::a_mat::{a_mat, AMatOptions};
+/// use nalgebra::DMatrix;
+///
+/// let geno = DMatrix::from_row_slice(3, 4, &[
+///     -1.0,  0.0,  1.0,  0.0,
+///      0.0,  1.0, -1.0,  1.0,
+///      1.0, -1.0,  0.0, -1.0,
+/// ]);
+///
+/// let result = a_mat(&geno, None).unwrap();
+/// println!("Relationship matrix:\n{}", result.a);
+/// ```
 ///
 /// # Notes
+///
 /// The genotype coding follows R/rrBLUP convention:
 /// - X values are {-1, 0, 1} representing genotype dosages
 /// - Allele frequency is computed as (X + 1) / 2, so freq = mean(X + 1) / 2
@@ -120,7 +165,7 @@ pub fn a_mat(x: &DMatrix<f64>, options: Option<AMatOptions>) -> Result<AMatResul
     }
 
     // Compute fraction of missing values per marker
-    // frac.missing <- apply(X,2,function(x){length(which(is.na(x)))/n})
+    // R: frac.missing <- apply(X,2,function(x){length(which(is.na(x)))/n})
     let frac_missing: Vec<f64> = (0..m_total)
         .map(|j| {
             let n_missing = (0..n).filter(|&i| !x[(i, j)].is_finite()).count();
@@ -131,7 +176,7 @@ pub fn a_mat(x: &DMatrix<f64>, options: Option<AMatOptions>) -> Result<AMatResul
     let has_missing = frac_missing.iter().any(|&f| f > 0.0);
 
     // Compute allele frequencies
-    // freq <- apply(X + 1, 2, function(x) {mean(x, na.rm = missing)})/2
+    // R: freq <- apply(X + 1, 2, function(x) {mean(x, na.rm = missing)})/2
     let freq: Vec<f64> = (0..m_total)
         .map(|j| {
             let mut sum = 0.0;
@@ -152,7 +197,7 @@ pub fn a_mat(x: &DMatrix<f64>, options: Option<AMatOptions>) -> Result<AMatResul
         .collect();
 
     // Compute MAF
-    // MAF <- apply(rbind(freq,1-freq),2,min)
+    // R: MAF <- apply(rbind(freq,1-freq),2,min)
     let maf: Vec<f64> = freq.iter().map(|&p| p.min(1.0 - p)).collect();
 
     // Default thresholds
@@ -162,7 +207,7 @@ pub fn a_mat(x: &DMatrix<f64>, options: Option<AMatOptions>) -> Result<AMatResul
     let max_missing = opts.max_missing.unwrap_or(1.0 - 1.0 / (2.0 * n as f64));
 
     // Filter markers
-    // markers <- which((MAF >= min.MAF)&(frac.missing <= max.missing))
+    // R: markers <- which((MAF >= min.MAF)&(frac.missing <= max.missing))
     let markers: Vec<usize> = (0..m_total)
         .filter(|&j| maf[j] >= min_maf && frac_missing[j] <= max_missing)
         .collect();
@@ -176,7 +221,7 @@ pub fn a_mat(x: &DMatrix<f64>, options: Option<AMatOptions>) -> Result<AMatResul
         ));
     }
 
-    // var.A <- 2 * mean(freq[markers] * (1 - freq[markers]))
+    // R: var.A <- 2 * mean(freq[markers] * (1 - freq[markers]))
     let var_a: f64 = 2.0
         * markers
             .iter()
@@ -189,13 +234,13 @@ pub fn a_mat(x: &DMatrix<f64>, options: Option<AMatOptions>) -> Result<AMatResul
     }
 
     // Handle monomorphic markers by setting to expected value
-    // mono <- which(freq*(1-freq)==0)
+    // R: mono <- which(freq*(1-freq)==0)
     // X[,mono] <- 2*tcrossprod(one,matrix(freq[mono],length(mono),1))-1
     // (This is handled implicitly by using filtered markers)
 
     // Build centered W matrix
-    // freq.mat <- tcrossprod(one, matrix(freq[markers], m, 1))
-    // W <- X[, markers] + 1 - 2 * freq.mat
+    // R: freq.mat <- tcrossprod(one, matrix(freq[markers], m, 1))
+    // R: W <- X[, markers] + 1 - 2 * freq.mat
     let freq_markers: Vec<f64> = markers.iter().map(|&j| freq[j]).collect();
 
     let mut w = DMatrix::zeros(n, m);
@@ -224,7 +269,7 @@ pub fn a_mat(x: &DMatrix<f64>, options: Option<AMatOptions>) -> Result<AMatResul
     } else {
         // Has missing values - need imputation
         // First, impute with zeros (mean-centered imputation)
-        // isna <- which(is.na(W))
+        // R: isna <- which(is.na(W))
         // W[isna] <- 0
         for j in 0..m {
             for i in 0..n {
@@ -287,7 +332,7 @@ pub fn a_mat(x: &DMatrix<f64>, options: Option<AMatOptions>) -> Result<AMatResul
     };
 
     // Convert imputed W back to X scale if requested
-    // Ximp <- W - 1 + 2*freq.mat
+    // R: Ximp <- W - 1 + 2*freq.mat
     let imputed_x = imputed_w.map(|w_imp| {
         let mut x_imp = DMatrix::zeros(n, m);
         for j in 0..m {
@@ -320,9 +365,9 @@ fn compute_a_no_missing(
         Some(shrink_config) => match shrink_config.method {
             ShrinkMethod::EJ => {
                 // Endelman-Jannink shrinkage
-                // W.mean <- rowMeans(W)
-                // cov.W <- cov.W.shrink(W)
-                // A <- (cov.W+tcrossprod(W.mean))/var.A
+                // R: W.mean <- rowMeans(W)
+                // R: cov.W <- cov.W.shrink(W)
+                // R: A <- (cov.W+tcrossprod(W.mean))/var.A
                 let w_mean = compute_row_means(w);
                 let (cov_w, delta) = cov_w_shrink(w);
                 let w_mean_outer = &w_mean * w_mean.transpose();
@@ -343,8 +388,8 @@ fn compute_a_no_missing(
                     deltas.iter().sum::<f64>() / deltas.len() as f64
                 };
 
-                // A <- tcrossprod(W)/var.A/m
-                // A <- (1-delta)*A + delta*mean(diag(A))*diag(n)
+                // R: A <- tcrossprod(W)/var.A/m
+                // R: A <- (1-delta)*A + delta*mean(diag(A))*diag(n)
                 let a_raw = (w * w.transpose()) / (var_a * m as f64);
                 let diag_mean: f64 = (0..n).map(|i| a_raw[(i, i)]).sum::<f64>() / n as f64;
                 let a = (1.0 - delta) * &a_raw + delta * diag_mean * DMatrix::identity(n, n);
@@ -353,7 +398,7 @@ fn compute_a_no_missing(
         },
         None => {
             // No shrinkage
-            // A <- tcrossprod(W)/var.A/m
+            // R: A <- tcrossprod(W)/var.A/m
             let a = (w * w.transpose()) / (var_a * m as f64);
             Ok((a, None))
         }
@@ -397,12 +442,12 @@ fn estimate_rank(mat: &DMatrix<f64>) -> usize {
 }
 
 /// Shrinkage estimator for covariance (Endelman-Jannink method)
-/// cov.W.shrink <- function(W) { ... }
+/// R: cov.W.shrink <- function(W) { ... }
 fn cov_w_shrink(w: &DMatrix<f64>) -> (DMatrix<f64>, f64) {
     let m = w.ncols() as f64;
     let n = w.nrows();
 
-    // Z <- t(scale(t(W),scale=FALSE)) - center rows
+    // R: Z <- t(scale(t(W),scale=FALSE)) - center rows
     let row_means = compute_row_means(w);
     let mut z = w.clone();
     for i in 0..n {
@@ -414,14 +459,14 @@ fn cov_w_shrink(w: &DMatrix<f64>) -> (DMatrix<f64>, f64) {
     // Z2 <- Z^2
     let z2 = z.map(|v| v * v);
 
-    // S <- tcrossprod(Z)/m
+    // R: S <- tcrossprod(Z)/m
     let s = (&z * z.transpose()) / m;
 
-    // target <- mean(diag(S))*diag(n)
+    // R: target <- mean(diag(S))*diag(n)
     let diag_mean: f64 = (0..n).map(|i| s[(i, i)]).sum::<f64>() / n as f64;
     let target = diag_mean * DMatrix::identity(n, n);
 
-    // var.S <- tcrossprod(Z2)/m^2-S^2/m
+    // R: var.S <- tcrossprod(Z2)/m^2-S^2/m
     let z2_outer = (&z2 * z2.transpose()) / (m * m);
     let s_sq = s.map(|v| v * v) / m;
     let var_s = &z2_outer - &s_sq;
@@ -433,7 +478,7 @@ fn cov_w_shrink(w: &DMatrix<f64>) -> (DMatrix<f64>, f64) {
     let diff = &s - &target;
     let d2: f64 = diff.iter().map(|v| v * v).sum();
 
-    // delta <- max(0,min(1,b2/d2))
+    // R: delta <- max(0,min(1,b2/d2))
     let delta = if d2 > 0.0 { (b2 / d2).clamp(0.0, 1.0) } else { 0.0 };
 
     // return(target*delta + (1-delta)*S)
@@ -442,7 +487,7 @@ fn cov_w_shrink(w: &DMatrix<f64>) -> (DMatrix<f64>, f64) {
 }
 
 /// Compute shrinkage coefficient (for REG method)
-/// shrink.coeff <- function(i,W,n.qtl,p) { ... }
+/// R: shrink.coeff <- function(i,W,n.qtl,p) { ... }
 fn shrink_coeff(w: &DMatrix<f64>, n_qtl: usize, p: &[f64]) -> Option<f64> {
     use rand::seq::SliceRandom;
     use rand::thread_rng;
@@ -454,14 +499,14 @@ fn shrink_coeff(w: &DMatrix<f64>, n_qtl: usize, p: &[f64]) -> Option<f64> {
         return None;
     }
 
-    // qtl <- sample(1:m, n.qtl)
+    // R: qtl <- sample(1:m, n.qtl)
     let mut rng = thread_rng();
     let mut indices: Vec<usize> = (0..m).collect();
     indices.shuffle(&mut rng);
     let qtl: Vec<usize> = indices[..n_qtl].to_vec();
     let not_qtl: Vec<usize> = indices[n_qtl..].to_vec();
 
-    // A.mark <- tcrossprod(W[,-qtl])/sum(2*p[-qtl]*(1-p[-qtl]))
+    // R: A.mark <- tcrossprod(W[,-qtl])/sum(2*p[-qtl]*(1-p[-qtl]))
     let denom_mark: f64 = not_qtl.iter().map(|&j| 2.0 * p[j] * (1.0 - p[j])).sum();
     if denom_mark == 0.0 {
         return None;
@@ -469,7 +514,7 @@ fn shrink_coeff(w: &DMatrix<f64>, n_qtl: usize, p: &[f64]) -> Option<f64> {
     let w_mark = select_columns(w, &not_qtl);
     let a_mark = (&w_mark * w_mark.transpose()) / denom_mark;
 
-    // A.qtl <- tcrossprod(W[,qtl])/sum(2*p[qtl]*(1-p[qtl]))
+    // R: A.qtl <- tcrossprod(W[,qtl])/sum(2*p[qtl]*(1-p[qtl]))
     let denom_qtl: f64 = qtl.iter().map(|&j| 2.0 * p[j] * (1.0 - p[j])).sum();
     if denom_qtl == 0.0 {
         return None;
@@ -477,12 +522,12 @@ fn shrink_coeff(w: &DMatrix<f64>, n_qtl: usize, p: &[f64]) -> Option<f64> {
     let w_qtl = select_columns(w, &qtl);
     let a_qtl = (&w_qtl * w_qtl.transpose()) / denom_qtl;
 
-    // x <- as.vector(A.mark - mean(diag(A.mark))*diag(n))
+    // R: x <- as.vector(A.mark - mean(diag(A.mark))*diag(n))
     let diag_mean_mark: f64 = (0..n).map(|i| a_mark[(i, i)]).sum::<f64>() / n as f64;
     let x_mat = &a_mark - diag_mean_mark * DMatrix::identity(n, n);
     let x: Vec<f64> = x_mat.iter().cloned().collect();
 
-    // y <- as.vector(A.qtl - mean(diag(A.qtl))*diag(n))
+    // R: y <- as.vector(A.qtl - mean(diag(A.qtl))*diag(n))
     let diag_mean_qtl: f64 = (0..n).map(|i| a_qtl[(i, i)]).sum::<f64>() / n as f64;
     let y_mat = &a_qtl - diag_mean_qtl * DMatrix::identity(n, n);
     let y: Vec<f64> = y_mat.iter().cloned().collect();
@@ -551,13 +596,13 @@ fn em_imputation(w: &DMatrix<f64>, var_a: f64, tol: f64) -> Result<(DMatrix<f64>
         }
     }
 
-    // mean.vec.new <- matrix(rowMeans(W),n,1)
+    // R: mean.vec.new <- matrix(rowMeans(W),n,1)
     let mut mean_vec = compute_row_means(&w_imp);
 
-    // cov.mat.new <- cov(t(W))
+    // R: cov.mat.new <- cov(t(W))
     let mut cov_mat = compute_row_covariance(&w_imp);
 
-    // A.new <- (cov.mat.new + tcrossprod(mean.vec.new))/var.A
+    // R: A.new <- (cov.mat.new + tcrossprod(mean.vec.new))/var.A
     let mean_outer = &mean_vec * mean_vec.transpose();
     let mut a_new = (&cov_mat + &mean_outer) / var_a;
 
@@ -573,14 +618,14 @@ fn em_imputation(w: &DMatrix<f64>, var_a: f64, tol: f64) -> Result<(DMatrix<f64>
         w_imp = w_new;
         mean_vec = compute_row_means(&w_imp);
 
-        // cov.mat.new <- (S-tcrossprod(mean.vec.new)*m)/(m-1)
+        // R: cov.mat.new <- (S-tcrossprod(mean.vec.new)*m)/(m-1)
         let mean_outer_new = &mean_vec * mean_vec.transpose();
         cov_mat = (&s - &mean_outer_new * m as f64) / (m - 1) as f64;
 
-        // A.new <- (cov.mat.new + tcrossprod(mean.vec.new))/var.A
+        // R: A.new <- (cov.mat.new + tcrossprod(mean.vec.new))/var.A
         a_new = (&cov_mat + &mean_outer_new) / var_a;
 
-        // err <- norm(A.old-A.new,type="F")/n
+        // R: err <- norm(A.old-A.new,type="F")/n
         let diff = &a_old - &a_new;
         let err = diff.iter().map(|v| v * v).sum::<f64>().sqrt() / n as f64;
 
@@ -593,7 +638,7 @@ fn em_imputation(w: &DMatrix<f64>, var_a: f64, tol: f64) -> Result<(DMatrix<f64>
 }
 
 /// Single step of EM imputation
-/// impute.EM <- function(W, cov.mat, mean.vec) { ... }
+/// R: impute.EM <- function(W, cov.mat, mean.vec) { ... }
 fn impute_em_step(
     w: &DMatrix<f64>,
     cov_mat: &DMatrix<f64>,
@@ -606,10 +651,10 @@ fn impute_em_step(
     let mut w_imp = w.clone();
 
     for j in 0..m {
-        // Wi <- matrix(W[,i],n,1)
+        // R: Wi <- matrix(W[,i],n,1)
         let mut wi: Vec<f64> = (0..n).map(|i| w[(i, j)]).collect();
 
-        // missing <- which(is.na(Wi))
+        // R: missing <- which(is.na(Wi))
         let missing: Vec<usize> = (0..n).filter(|&i| !wi[i].is_finite()).collect();
 
         let d = if !missing.is_empty() {
@@ -624,7 +669,7 @@ fn impute_em_step(
                 let wi_vec = DVector::from_row_slice(&wi);
                 &wi_vec * wi_vec.transpose()
             } else {
-                // Bt <- solve(cov.mat[not.NA,not.NA], cov.mat[not.NA,missing])
+                // R: Bt <- solve(cov.mat[not.NA,not.NA], cov.mat[not.NA,missing])
                 let cov_obs_obs = select_submatrix(cov_mat, &not_na, &not_na);
                 let cov_obs_miss = select_submatrix(cov_mat, &not_na, &missing);
 
@@ -650,11 +695,11 @@ fn impute_em_step(
                     wi[i] = imputed[idx];
                 }
 
-                // C <- cov.mat[missing,missing] - crossprod(cov.mat[not.NA,missing],Bt)
+                // R: C <- cov.mat[missing,missing] - crossprod(cov.mat[not.NA,missing],Bt)
                 let cov_miss_miss = select_submatrix(cov_mat, &missing, &missing);
                 let c_mat = &cov_miss_miss - cov_obs_miss.transpose() * &bt;
 
-                // D <- tcrossprod(Wi)
+                // R: D <- tcrossprod(Wi)
                 // D[missing,missing] <- D[missing,missing] + C
                 let wi_vec = DVector::from_row_slice(&wi);
                 let mut d = &wi_vec * wi_vec.transpose();
@@ -671,7 +716,7 @@ fn impute_em_step(
             &wi_vec * wi_vec.transpose()
         };
 
-        // S <- S + D
+        // R: S <- S + D
         s += d;
 
         // Update W.imp

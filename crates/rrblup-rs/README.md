@@ -1,6 +1,6 @@
 # rrblup-rs
 
-A Rust implementation of [rrBLUP](https://cran.r-project.org/package=rrBLUP) for mixed model solving and genomic prediction.
+A Rust implementation of [rrBLUP](https://cran.r-project.org/package=rrBLUP) for mixed model solving and genomic prediction. Based on R/rrBLUP version **4.6.3**.
 
 > **This is a library crate.**
 >
@@ -57,6 +57,15 @@ println!("Vu: {}, Ve: {}", result.vu, result.ve);
 | 200    | 704    | 474       | **1.5x**    |
 
 **Summary:** Rust is 3-5x faster for marker-based workflows, with advantages growing as problem size increases.
+
+## Citation
+
+If you use `rrblup-rs`, please cite the original R/rrBLUP paper:
+
+> Endelman, J.B. (2011). Ridge regression and other kernels for genomic selection with R package rrBLUP. *The Plant Genome* 4:250-255.
+
+This crate is a Rust reimplementation of `mixed.solve` and related functionality.
+For a command-line interface, see [Binx](https://github.com/alex-sandercock/Binx).
 
 ## Related Crates
 
