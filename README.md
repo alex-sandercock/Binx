@@ -66,7 +66,6 @@ binx gwas \
   --pheno data/phenotypes.csv \
   --trait yield \
   --ploidy 4 \
-  --kinship kinship.tsv \
   --models additive,general \
   --out gwas_results.csv
 
