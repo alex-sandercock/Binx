@@ -3,7 +3,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![CI](https://github.com/alex-sandercock/Binx/actions/workflows/release.yml/badge.svg)](https://github.com/alex-sandercock/Binx/actions/workflows/release.yml)
 
-Rust command-line genomics workbench for diploid and polyploid species. `binx` targets GWAS and related analyses with a familiar UX: fast defaults, explicit inputs, and clear TSV/CSV outputs.
+Rust command-line genomics workbench for diploid and polyploid species. `binx` targets GWAS and related analyses with a familiar UX: fast defaults, explicit inputs, and clear outputs.
 
 This repo contains:
 - rrblup-rs: a faithful Rust port of R/rrBLUP’s mixed.solve and related routines
@@ -54,11 +54,11 @@ cargo install --path binx-cli
 ## Quick Start
 
 ```bash
-# 1) Compute a kinship matrix from biallelic dosages
-binx kinship \
-  --geno data/genotypes.tsv \
-  --ploidy 4 \
-  --out kinship.tsv
+# 1) Convert VCF to GWASpoly CSV format
+binx convert \
+  --vcf data/samples.vcf.gz \
+  --format gwaspoly \
+  --output genotypes.tsv
 
 # 2) Run GWASpoly-style GWAS with multiple genetic models
 binx gwas \
@@ -66,20 +66,30 @@ binx gwas \
   --pheno data/phenotypes.csv \
   --trait yield \
   --ploidy 4 \
-  --kinship kinship.tsv \
   --models additive,general \
   --out gwas_results.csv
 
-# 3) Estimate genotype dosages from a VCF file
-binx dosage \
-  --vcf data/samples.vcf.gz \
-  --ploidy 4 \
-  --output dosages.tsv
+# 3) Filter unique QTLs from GWAS output
+binx qtl \
+  --input gwas_results.csv \
+  --bp-window 10000000 \
+  --output qtl_results.csv
 
-# 4) Convert VCF to Binx two-line CSV format
-binx convert \
-  --vcf data/samples.vcf.gz \
-  --output counts.csv
+# 4) Create a Manhattan plot from GWAS results
+binx plot \
+  --input gwas_results.csv \
+  --plot-type manhattan \
+  --theme classic \
+  --model additive \
+  --threshold 5 \
+  --output gwas_manhattan.svg
+
+# Optional) Recalculate GWAS significance threshold
+binx threshold \
+  --results gwas_results.csv \
+  --method bonferroni \
+  --alpha 0.05 \
+
 ```
 
 ## Commands
