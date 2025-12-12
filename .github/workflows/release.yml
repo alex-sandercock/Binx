@@ -17,7 +17,7 @@ jobs:
             os: ubuntu-latest
             name: linux-x86_64
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: macos-13
             name: macos-x86_64
           - target: aarch64-apple-darwin
             os: macos-latest
@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
@@ -80,7 +80,7 @@ jobs:
           fi
 
       - name: Create/Update Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release_info.outputs.tag }}
           name: ${{ steps.release_info.outputs.name }}
@@ -95,5 +95,3 @@ jobs:
             binx-macos-x86_64/*.tar.gz
             binx-macos-aarch64/*.tar.gz
           prerelease: ${{ steps.release_info.outputs.prerelease }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
