@@ -2,8 +2,15 @@
 name = "gwaspoly-rs"
 version = "0.1.0"
 edition = "2021"
+authors = ["Alexander M. Sandercock <sandercock.alex@gmail.com>"]
 license = "GPL-3.0-or-later"
 description = "Rust implementation of R/GWASpoly package for GWAS in polyploids"
+repository = "https://github.com/alex-sandercock/Binx"
+homepage = "https://github.com/alex-sandercock/Binx/tree/main/crates/gwaspoly-rs"
+documentation = "https://docs.rs/gwaspoly-rs"
+keywords = ["genomics", "gwas", "polyploid", "genetics", "bioinformatics"]
+categories = ["science"]
+readme = "README.md"
 
 [dependencies]
 # Standalone crate - only depends on rrblup-rs (mirrors R architecture where GWASpoly wraps rrBLUP)

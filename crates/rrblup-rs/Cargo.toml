@@ -2,6 +2,7 @@
 name = "rrblup-rs"
 version = "0.1.0"
 edition = "2021"
+authors = ["Alexander M. Sandercock <sandercock.alex@gmail.com>"]
 license = "GPL-3.0-or-later"
 description = "Rust implementation of R/rrBLUP package for mixed model analysis"
 repository = "https://github.com/alex-sandercock/Binx"
