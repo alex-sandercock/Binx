@@ -11,7 +11,7 @@ documentation = "https://docs.rs/rrblup-rs"
 keywords = ["genomics", "blup", "mixed-model", "gwas", "genetics"]
 categories = ["science::bioinformatics::genomics"]
 readme = "README.md"
-exclude = ["benches/", "tests/"]
+exclude = ["benches/", "tests/", ".DS_Store", "src/.DS_Store"]
 
 [dependencies]
 ndarray = "0.15"
