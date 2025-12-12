@@ -1,5 +1,7 @@
-
 # Binx <img src="docs/assets/binx-logo.png" align="right" width="150"/>
+
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![CI](https://github.com/alex-sandercock/Binx/actions/workflows/release.yml/badge.svg)](https://github.com/alex-sandercock/Binx/actions/workflows/release.yml)
 
 Rust command-line genomics workbench for diploid and polyploid species. `binx` targets GWAS-style analyses with a familiar UX: fast defaults, explicit inputs, and clear TSV/CSV outputs.
 
@@ -186,9 +188,14 @@ Binx is organized as a Cargo workspace with specialized crates:
 | Crate | Description |
 |-------|-------------|
 | `binx-cli` | Main CLI binary (`binx`) |
-| `binx-types` | Core data structures and I/O utilities |
+| `binx-gwas` | GWAS orchestration layer |
 | `binx-kinship` | Kinship matrix computation |
 | `binx-dosage` | Genotype dosage estimation (updog-style) |
+| `binx-convert` | VCF conversion utilities |
+| `binx-types` | Core data structures and I/O utilities |
+| `binx-io` | File I/O helpers |
+| `binx-plotting` | Plotting utilities |
+| `binx-multigwas` | Multiallelic GWAS (planned) |
 | `gwaspoly-rs` | GWASpoly GWAS implementation |
 | `rrblup-rs` | R/rrBLUP mixed model solver (validated against R) |
 
@@ -219,6 +226,8 @@ If Binx is useful in your work, please cite the original methods:
 > Endelman, J.B. (2011). Ridge regression and other kernels for genomic selection with R package rrBLUP. *The Plant Genome* 4:250-255.
 
 > Rosyara, U.R., De Jong, W.S., Douches, D.S., & Endelman, J.B. (2016). Software for genome-wide association studies in autopolyploids and its application to potato. *The Plant Genome* 9(2).
+
+> Gerard, D., Ferrão, L.F.V., Garcia, A.A.F., & Stephens, M. (2018). Genotyping polyploids from messy sequencing data. *Genetics* 210(3):789-807.
 
 You may also cite the Binx implementation:
 
