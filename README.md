@@ -82,76 +82,16 @@ binx convert \
   --output counts.csv
 ```
 
-## Command Reference
+## Commands
 
-### binx gwas
-GWASpoly-style GWAS for polyploids with multiple genetic models. Uses validated rrblup-rs mixed model solver.
+| Command | Description |
+|---------|-------------|
+| `binx gwas` | GWASpoly-style GWAS with multiple genetic models |
+| `binx kinship` | Compute kinship matrix (VanRaden method) |
+| `binx dosage` | Estimate genotype dosages from read counts |
+| `binx convert` | Convert VCF to other formats |
 
-**Required:**
-- `--geno <file>` — Genotype dosage file (TSV/CSV)
-- `--pheno <file>` — Phenotype file (TSV/CSV)
-- `--trait <name>` — Trait column to analyze
-- `--ploidy <int>` — Ploidy level (2, 4, 6, etc.)
-- `--out <file>` — Output results file
-
-**Optional:**
-- `--method <method>` — GWAS method (default: `gwaspoly`)
-- `--kinship <file>` — Pre-computed kinship matrix (auto-computed if omitted)
-- `--models <list>` — Comma-separated models: `additive`, `general`, `1-dom-ref`, `1-dom-alt`, `2-dom-ref`, `2-dom-alt`, `diplo-general`, `diplo-additive` (default: `additive,general`)
-- `--covariates <list>` — Comma-separated covariate column names
-- `--n-pc <int>` — Number of principal components to include as fixed effects (P+K model)
-- `--loco` — Enable Leave-One-Chromosome-Out kinship
-- `--parallel` — Use parallel marker testing for faster performance
-- `--min-maf <float>` — Minimum minor allele frequency filter
-- `--max-geno-freq <float>` — Maximum genotype frequency for QC
-- `--threshold <method>` — Significance threshold: `bonferroni`, `m.eff`, or `fdr`
-- `--allow-missing-samples` — Allow samples in genotypes missing from phenotypes
-
-**Output:** CSV with `marker_id`, `chrom`, `pos`, `model`, `score` (-log10 p), `p_value`, `effect`, `n_obs`
-
-### binx kinship
-Compute kinship matrix from biallelic dosages.
-
-**Required:**
-- `--geno <file>` — Genotype dosage file
-- `--ploidy <int>` — Ploidy level
-- `--out <file>` — Output kinship matrix
-
-**Optional:**
-- `--method <method>` — `vanraden` (default) or `gwaspoly`
-
-**Output:** Symmetric TSV with header `sample_id <S1> <S2> ...`
-
-### binx dosage
-Estimate genotype dosages from sequencing read counts.
-
-**Required:**
-- `--ploidy <int>` — Ploidy level
-- One of:
-  - `--vcf <file>` — VCF file with FORMAT/AD field
-  - `--csv <file>` — Two-line CSV (ref counts, total counts per locus)
-  - `--counts --ref-path <file> --total-path <file>` — Separate count matrices
-
-**Optional:**
-- `--output <file>` — Output path (defaults to stdout)
-- `--format <fmt>` — Output format: `matrix`, `stats`, `beagle`, `vcf`, `plink`, `gwaspoly`
-- `--mode <mode>` — Optimization mode: `auto`, `updog`, `updog-fast`, `updog-exact`, `fast`, `turbo`, `turboauto`, `turboauto-safe`
-- `--threads <int>` — Number of parallel threads
-- `--compress <mode>` — `none` or `gzip`
-- `--verbose` — Show progress
-
-### binx convert
-Convert VCF to other formats.
-
-**Required:**
-- `--vcf <file>` — Input VCF file (plain or gzipped)
-- `--output <file>` — Output path
-
-**Optional:**
-- `--format <fmt>` — Output format (default: `csv`):
-  - `csv` — Two-line format with ref/total counts from AD field
-  - `gwaspoly` — GWASpoly genotype format with dosages from GT field
-- `--verbose` — Show progress
+Run `binx <command> --help` for full options.
 
 ## Input Formats
 
