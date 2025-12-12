@@ -1,7 +1,9 @@
-
 # Binx <img src="docs/assets/binx-logo.png" align="right" width="150"/>
 
-Rust command-line genomics workbench for diploid and polyploid species. `binx` targets GWAS-style analyses with a familiar UX: fast defaults, explicit inputs, and clear TSV/CSV outputs.
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![CI](https://github.com/alex-sandercock/Binx/actions/workflows/release.yml/badge.svg)](https://github.com/alex-sandercock/Binx/actions/workflows/release.yml)
+
+Rust command-line genomics workbench for diploid and polyploid species. `binx` targets GWAS and related analyses with a familiar UX: fast defaults, explicit inputs, and clear TSV/CSV outputs.
 
 This repo contains:
 - rrblup-rs: a faithful Rust port of R/rrBLUP’s mixed.solve and related routines
@@ -12,28 +14,34 @@ This repo contains:
 
 - **GWASpoly-style GWAS** (`binx gwas`) with eight genetic models for polyploids, validated against R/GWASpoly
 - **Accurate mixed model fitting** via rrblup-rs, a Rust implementation of R/rrBLUP's `mixed.solve`
-- **Genotype dosage estimation** (`binx dosage`) from VCF or read count data using updog-style algorithms
-- **Kinship matrix computation** (`binx kinship`) via VanRaden or GWASpoly methods
+- **Genotype dosage estimation** (`binx dosage`) from VCF or read count data using R/Updog-based algorithms
+- **Kinship matrix computation** (`binx kinship`) via VanRaden methods
 - **VCF conversion** (`binx convert`) to Binx two-line CSV format
 - Polyploid-aware: supports ploidy levels 2, 4, 6, etc.
 - Handles repeated phenotype IDs (multi-environment trials) and LOCO (Leave-One-Chromosome-Out)
 
-## TODO
-- Implement `fastgwas` method - faster polyploid GWAS with slight accuracy trade-off
-- Frame out `multigwas` for multiallelic GWAS
-- Draft mdbook pages and deploy to GitHub Pages
-- Clean up documentation and comments
-- Upload packages to crates.io
-- Ensure licenses and references to GWASpoly, Updog, and rrBLUP are present
-
-## Completed
-- ✓ GWASpoly LOCO validated against R/GWASpoly (all configurations match)
-- ✓ GWASpoly covariates validated against R/GWASpoly
-- ✓ Comprehensive benchmarking: LOCO/non-LOCO × PCs/no-PCs × additive/general models all match R
-
 ## Installation
 
-Requires a Rust toolchain (`cargo` + `rustc`).
+### Pre-built Binaries (Recommended)
+Download the latest release for your platform from [Releases](https://github.com/alex-sandercock/Binx/releases):
+- `binx-linux-x86_64.tar.gz` — Linux
+- `binx-macos-x86_64.tar.gz` — macOS (Intel)
+- `binx-macos-aarch64.tar.gz` — macOS (Apple Silicon)
+
+```bash
+# Download and extract (example: Linux)
+curl -LO https://github.com/alex-sandercock/Binx/releases/latest/download/binx-linux-x86_64.tar.gz
+tar -xzf binx-linux-x86_64.tar.gz
+./binx --help
+
+# Optional: install to PATH
+mkdir -p ~/bin && mv binx ~/bin/
+# Add to PATH if not already (add to ~/.bashrc or ~/.zshrc):
+# export PATH="$HOME/bin:$PATH"
+```
+
+### Build from Source
+Requires Rust toolchain (`cargo` + `rustc`).
 
 ```bash
 # Build locally (binary at target/release/binx)
@@ -74,79 +82,19 @@ binx convert \
   --output counts.csv
 ```
 
-## Command Reference
+## Commands
 
-### binx gwas
-GWASpoly-style GWAS for polyploids with multiple genetic models. Uses validated rrblup-rs mixed model solver.
+| Command | Description |
+|---------|-------------|
+| `binx gwas` | GWASpoly-style GWAS with multiple genetic models |
+| `binx kinship` | Compute kinship matrix (VanRaden method) |
+| `binx dosage` | Estimate genotype dosages from read counts |
+| `binx convert` | Convert VCF to other formats |
+| `binx plot` | Generate Manhattan, QQ, or LD decay plots |
+| `binx qtl` | Identify significant QTLs from GWAS results |
+| `binx threshold` | Calculate significance thresholds (Bonferroni, M.eff, FDR) |
 
-**Required:**
-- `--geno <file>` — Genotype dosage file (TSV/CSV)
-- `--pheno <file>` — Phenotype file (TSV/CSV)
-- `--trait <name>` — Trait column to analyze
-- `--ploidy <int>` — Ploidy level (2, 4, 6, etc.)
-- `--out <file>` — Output results file
-
-**Optional:**
-- `--method <method>` — GWAS method (default: `gwaspoly`)
-- `--kinship <file>` — Pre-computed kinship matrix (auto-computed if omitted)
-- `--models <list>` — Comma-separated models: `additive`, `general`, `1-dom-ref`, `1-dom-alt`, `2-dom-ref`, `2-dom-alt`, `diplo-general`, `diplo-additive` (default: `additive,general`)
-- `--covariates <list>` — Comma-separated covariate column names
-- `--n-pc <int>` — Number of principal components to include as fixed effects (P+K model)
-- `--loco` — Enable Leave-One-Chromosome-Out kinship
-- `--parallel` — Use parallel marker testing for faster performance
-- `--min-maf <float>` — Minimum minor allele frequency filter
-- `--max-geno-freq <float>` — Maximum genotype frequency for QC
-- `--threshold <method>` — Significance threshold: `bonferroni`, `m.eff`, or `fdr`
-- `--allow-missing-samples` — Allow samples in genotypes missing from phenotypes
-
-**Output:** CSV with `marker_id`, `chrom`, `pos`, `model`, `score` (-log10 p), `p_value`, `effect`, `n_obs`
-
-### binx kinship
-Compute kinship matrix from biallelic dosages.
-
-**Required:**
-- `--geno <file>` — Genotype dosage file
-- `--ploidy <int>` — Ploidy level
-- `--out <file>` — Output kinship matrix
-
-**Optional:**
-- `--method <method>` — `vanraden` (default) or `gwaspoly`
-
-**Output:** Symmetric TSV with header `sample_id <S1> <S2> ...`
-
-### binx dosage
-Estimate genotype dosages from sequencing read counts.
-
-**Required:**
-- `--ploidy <int>` — Ploidy level
-- One of:
-  - `--vcf <file>` — VCF file with FORMAT/AD field
-  - `--csv <file>` — Two-line CSV (ref counts, total counts per locus)
-  - `--counts --ref-path <file> --total-path <file>` — Separate count matrices
-
-**Optional:**
-- `--output <file>` — Output path (defaults to stdout)
-- `--format <fmt>` — Output format: `matrix`, `stats`, `beagle`, `vcf`, `plink`, `gwaspoly`
-- `--mode <mode>` — Optimization mode: `auto`, `updog`, `updog-fast`, `updog-exact`, `fast`, `turbo`, `turboauto`, `turboauto-safe`
-- `--threads <int>` — Number of parallel threads
-- `--compress <mode>` — `none` or `gzip`
-- `--verbose` — Show progress
-
-### binx convert
-Convert VCF to other formats.
-
-**Required:**
-- `--vcf <file>` — Input VCF file (plain or gzipped)
-- `--output <file>` — Output path
-
-**Optional:**
-- `--format <fmt>` — Output format (default: `csv`):
-  - `csv` — Two-line format with ref/total counts from AD field
-  - `gwaspoly` — GWASpoly genotype format with dosages from GT field
-- `--verbose` — Show progress
-
-### binx multigwas
-Multiallelic GWAS (stub for future development).
+Run `binx <command> --help` for full options.
 
 ## Input Formats
 
@@ -183,9 +131,14 @@ Binx is organized as a Cargo workspace with specialized crates:
 | Crate | Description |
 |-------|-------------|
 | `binx-cli` | Main CLI binary (`binx`) |
-| `binx-core` | Core data structures and I/O utilities |
+| `binx-gwas` | GWAS orchestration layer |
 | `binx-kinship` | Kinship matrix computation |
 | `binx-dosage` | Genotype dosage estimation (updog-style) |
+| `binx-convert` | VCF conversion utilities |
+| `binx-types` | Core data structures and I/O utilities |
+| `binx-io` | File I/O helpers |
+| `binx-plotting` | Plotting utilities |
+| `binx-multigwas` | Multiallelic GWAS (planned) |
 | `gwaspoly-rs` | GWASpoly GWAS implementation |
 | `rrblup-rs` | R/rrBLUP mixed model solver (validated against R) |
 
@@ -208,6 +161,22 @@ Validated against R/GWASpoly across all configurations:
 - With and without covariates
 
 Results match R/GWASpoly to 4-5 decimal places.
+
+## Citation
+
+If Binx is useful in your work, please cite the original methods:
+
+> Endelman, J.B. (2011). Ridge regression and other kernels for genomic selection with R package rrBLUP. *The Plant Genome* 4:250-255.
+
+> Rosyara, U.R., De Jong, W.S., Douches, D.S., & Endelman, J.B. (2016). Software for genome-wide association studies in autopolyploids and its application to potato. *The Plant Genome* 9(2).
+
+> Gerard, D., Ferrão, L.F.V., Garcia, A.A.F., & Stephens, M. (2018). Genotyping polyploids from messy sequencing data. *Genetics* 210(3):789-807.
+
+You may also cite the Binx implementation:
+
+> Sandercock, A.M. (2025). Binx: A Rust-based CLI tool for polyploid and diploid genomic analysis. GitHub repository: https://github.com/alex-sandercock/Binx
+
+*(A formal article/DOI is planned; this section will be updated when available.)*
 
 ## License
 

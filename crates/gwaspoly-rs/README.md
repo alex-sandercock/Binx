@@ -1,6 +1,6 @@
 # gwaspoly-rs
 
-A Rust implementation of [GWASpoly](https://github.com/jendelman/GWASpoly) for genome-wide association studies in polyploid species.
+A Rust implementation of [GWASpoly](https://github.com/jendelman/GWASpoly) for genome-wide association studies in polyploid species. Based on R/GWASpoly version **2.14**.
 
 > **For CLI workflows, use [Binx](https://github.com/Breeding-Insight/Binx)**
 >
@@ -53,6 +53,15 @@ Preliminary benchmarks vs R/GWASpoly on a potato dataset (958 samples, 9.8k SNPs
 | LOCO     | 8-10    | 125.21 | 46.1     | **2.7x**    |
 
 *LOCO parallelization is not yet fully optimized. Future improvements to rrblup-rs with faer will improve LOCO performance.*
+
+## Citation
+
+If you use `gwaspoly-rs`, please cite the original GWASpoly paper:
+
+> Rosyara, U.R., De Jong, W.S., Douches, D.S., & Endelman, J.B. (2016). Software for genome-wide association studies in autopolyploids and its application to potato. *The Plant Genome* 9(2).
+
+This crate is a Rust reimplementation of GWASpoly's core GWAS methods.
+For a command-line interface, see [Binx](https://github.com/alex-sandercock/Binx).
 
 ## Related Crates
 

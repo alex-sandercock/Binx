@@ -1,11 +1,29 @@
 //! Rust implementation of R/rrBLUP::kin.blup
 //!
-//! This module provides a direct translation of the kin.blup function from
-//! the R/rrBLUP package. The implementation follows the original R code structure
-//! as closely as possible for verification and maintainability.
+//! This module provides genomic prediction using kinship-based BLUP (G-BLUP).
+//! It can predict genetic values for both phenotyped and unphenotyped individuals
+//! using a genomic relationship matrix.
 //!
-//! Reference: R/rrBLUP package by Jeffrey Endelman
-//! https://cran.r-project.org/package=rrBLUP
+//! # Example
+//!
+//! ```
+//! use rrblup_rs::kin_blup::{kin_blup, KinBlupData, KinBlupOptions};
+//!
+//! let data = KinBlupData {
+//!     geno_ids: vec!["A".into(), "B".into(), "C".into()],
+//!     pheno: vec![1.0, 2.0, 3.0],
+//!     fixed: None,
+//!     covariates: None,
+//! };
+//!
+//! let result = kin_blup(&data, None).unwrap();
+//! assert_eq!(result.g.len(), 3);
+//! ```
+//!
+//! # Reference
+//!
+//! R/rrBLUP package by Jeffrey Endelman:
+//! <https://cran.r-project.org/package=rrBLUP>
 
 use crate::mixed_solve::{mixed_solve, MixedSolveOptions};
 use anyhow::{anyhow, Result};
@@ -78,11 +96,40 @@ pub struct KinBlupResult {
 /// This is a Rust implementation of R/rrBLUP::kin.blup().
 ///
 /// # Arguments
+///
 /// * `data` - Input data containing genotype IDs, phenotypes, and optional effects
 /// * `options` - Optional settings (GAUSS, K, PEV, theta.seq)
 ///
 /// # Returns
-/// * KinBlupResult with genetic values, variance components, residuals, and predictions
+///
+/// [`KinBlupResult`] with genetic values, variance components, residuals, and predictions.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Phenotype data is empty
+/// - All phenotype values are missing (`NaN`)
+/// - Genotype IDs length doesn't match phenotype length
+/// - K matrix provided but `k_ids` is missing
+/// - K matrix dimensions don't match `k_ids` length
+/// - Phenotyped individuals are missing from K matrix
+///
+/// # Example
+///
+/// ```
+/// use rrblup_rs::kin_blup::{kin_blup, KinBlupData, KinBlupOptions};
+///
+/// let data = KinBlupData {
+///     geno_ids: vec!["A".into(), "B".into(), "C".into()],
+///     pheno: vec![1.0, 2.0, 3.0],
+///     fixed: None,
+///     covariates: None,
+/// };
+///
+/// let result = kin_blup(&data, None).unwrap();
+/// println!("Genetic variance: {}", result.vg);
+/// println!("Genetic values: {:?}", result.g);
+/// ```
 pub fn kin_blup(data: &KinBlupData, options: Option<KinBlupOptions>) -> Result<KinBlupResult> {
     let opts = options.unwrap_or_default();
 
@@ -98,7 +145,7 @@ pub fn kin_blup(data: &KinBlupData, options: Option<KinBlupOptions>) -> Result<K
         ));
     }
 
-    // not.miss <- which(!is.na(y))
+    // R: not.miss <- which(!is.na(y))
     let not_miss: Vec<usize> = (0..n_total)
         .filter(|&i| data.pheno[i].is_finite())
         .collect();
@@ -114,7 +161,7 @@ pub fn kin_blup(data: &KinBlupData, options: Option<KinBlupOptions>) -> Result<K
     let geno_ids_subset: Vec<String> = not_miss.iter().map(|&i| data.geno_ids[i].clone()).collect();
 
     // Build X matrix (fixed effects design matrix)
-    // X <- matrix(1,n,1) - start with intercept
+    // R: X <- matrix(1,n,1) - start with intercept
     let mut x_cols: Vec<Vec<f64>> = vec![vec![1.0; n]]; // intercept
 
     // Add fixed effects (categorical factors)
@@ -134,7 +181,7 @@ pub fn kin_blup(data: &KinBlupData, options: Option<KinBlupOptions>) -> Result<K
             // Only add if more than one unique level
             if levels.len() > 1 {
                 // Create dummy variables (model.matrix style, dropping first level)
-                for level in levels.iter().skip(0) {
+                for level in levels.iter() {
                     // Include all levels like R's ~x-1
                     let dummy: Vec<f64> = factor_subset
                         .iter()
@@ -185,9 +232,9 @@ pub fn kin_blup(data: &KinBlupData, options: Option<KinBlupOptions>) -> Result<K
 
     if opts.k.is_none() {
         // No kinship matrix - use identity covariance
-        // gid <- not.miss.gid
-        // v <- length(gid)
-        // Z <- matrix(0,n,v)
+        // R: gid <- not.miss.gid
+        // R: v <- length(gid)
+        // R: Z <- matrix(0,n,v)
         // Z[cbind(1:n,match(data[,gid.pos],gid))] <- 1
 
         let gid = not_miss_gid.clone();
@@ -283,7 +330,7 @@ pub fn kin_blup(data: &KinBlupData, options: Option<KinBlupOptions>) -> Result<K
             .cloned()
             .collect();
 
-        // ix.pheno <- match(not.miss.gid, gid)
+        // R: ix.pheno <- match(not.miss.gid, gid)
         let k_id_to_idx: HashMap<&String, usize> =
             k_ids.iter().enumerate().map(|(i, id)| (id, i)).collect();
 
@@ -371,7 +418,7 @@ pub fn kin_blup(data: &KinBlupData, options: Option<KinBlupOptions>) -> Result<K
             })
         } else {
             // Gaussian kernel BLUP
-            // theta <- setdiff(seq(0, max(K), length.out=11), 0)
+            // R: theta <- setdiff(seq(0, max(K), length.out=11), 0)
             let theta_seq = opts.theta_seq.unwrap_or_else(|| {
                 let max_k = k_reordered
                     .iter()
@@ -455,7 +502,7 @@ pub fn kin_blup(data: &KinBlupData, options: Option<KinBlupOptions>) -> Result<K
 }
 
 /// Make matrix full rank using SVD
-/// make.full <- function(X) {
+/// R: make.full <- function(X) {
 ///     svd.X <- svd(X)
 ///     r <- max(which(svd.X$d > 1e-8))
 ///     return(as.matrix(svd.X$u[,1:r]))

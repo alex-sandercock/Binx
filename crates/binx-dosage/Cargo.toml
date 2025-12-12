@@ -2,6 +2,15 @@
 name = "binx-dosage"
 version = "0.1.0"
 edition = "2021"
+authors = ["Alexander M. Sandercock <sandercock.alex@gmail.com>"]
+license = "GPL-3.0-or-later"
+description = "Genotype dosage estimation from sequencing read counts using updog-style algorithms"
+repository = "https://github.com/alex-sandercock/Binx"
+homepage = "https://github.com/alex-sandercock/Binx/tree/main/crates/binx-dosage"
+documentation = "https://docs.rs/binx-dosage"
+keywords = ["genomics", "genotyping", "polyploid", "dosage", "bioinformatics"]
+categories = ["science"]
+readme = "README.md"
 
 [features]
 default = []

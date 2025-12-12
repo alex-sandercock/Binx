@@ -1,0 +1,33 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Test artifacts
+*.log
+*.tmp
+
+# Environment
+.env
+.env.local
+
+# Coverage
+*.profraw
+*.profdata
+lcov.info
+tarpaulin-report.html
+
+# Benchmarks
+criterion/
+
+# R parity test outputs (keep inputs)
+tests/parity/output/

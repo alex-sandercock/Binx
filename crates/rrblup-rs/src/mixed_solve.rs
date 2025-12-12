@@ -1,11 +1,24 @@
 //! Rust implementation of R/rrBLUP::mixed.solve
 //!
 //! This module provides a direct translation of the mixed.solve function from
-//! the R/rrBLUP package. The implementation follows the original R code structure
-//! as closely as possible for verification and maintainability.
+//! the R/rrBLUP package for solving mixed linear models using spectral decomposition.
 //!
-//! Reference: R/rrBLUP package by Jeffrey Endelman
-//! https://cran.r-project.org/package=rrBLUP
+//! # Example
+//!
+//! ```
+//! use rrblup_rs::mixed_solve::{mixed_solve, MixedSolveOptions, Method};
+//!
+//! // Simple mixed model with intercept only
+//! let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+//! let result = mixed_solve(&y, None, None, None, None).unwrap();
+//! assert!(result.vu >= 0.0);
+//! assert!(result.ve >= 0.0);
+//! ```
+//!
+//! # Reference
+//!
+//! R/rrBLUP package by Jeffrey Endelman:
+//! <https://cran.r-project.org/package=rrBLUP>
 
 use anyhow::{anyhow, Result};
 use faer::Mat as FaerMat;
@@ -75,6 +88,7 @@ pub struct MixedSolveResult {
 /// This is a Rust implementation of R/rrBLUP::mixed.solve().
 ///
 /// # Arguments
+///
 /// * `y` - Response vector (n x 1), may contain NaN for missing values
 /// * `z` - Random effects design matrix (n x m), defaults to identity if None
 /// * `k` - Covariance matrix for random effects (m x m), defaults to identity if None
@@ -82,9 +96,32 @@ pub struct MixedSolveResult {
 /// * `options` - Optional settings (method, bounds, SE, return.Hinv)
 ///
 /// # Returns
-/// * MixedSolveResult with variance components, BLUPs, and optionally SEs
+///
+/// [`MixedSolveResult`] with variance components, BLUPs, and optionally SEs.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - All `y` values are `NaN`
+/// - Matrix dimensions are incompatible (`nrow(Z) != n` or `nrow(X) != n`)
+/// - `X` is not full rank
+/// - `K` is not positive semi-definite
+///
+/// # Example
+///
+/// ```
+/// use rrblup_rs::mixed_solve::{mixed_solve, MixedSolveOptions};
+///
+/// let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+/// let result = mixed_solve(&y, None, None, None, None).unwrap();
+///
+/// println!("Genetic variance (Vu): {}", result.vu);
+/// println!("Residual variance (Ve): {}", result.ve);
+/// println!("Fixed effects (beta): {:?}", result.beta);
+/// ```
 ///
 /// # Notes
+///
 /// The parameter order matches R: mixed.solve(y, Z=NULL, K=NULL, X=NULL, ...)
 pub fn mixed_solve(
     y: &[f64],
@@ -96,10 +133,10 @@ pub fn mixed_solve(
     let opts = options.unwrap_or_default();
     let pi = std::f64::consts::PI;
 
-    // n <- length(y)
+    // R: n <- length(y)
     let n_full = y.len();
 
-    // not.NA <- which(!is.na(y))
+    // R: not.NA <- which(!is.na(y))
     let not_na: Vec<usize> = (0..n_full).filter(|&i| y[i].is_finite()).collect();
 
     if not_na.is_empty() {
@@ -156,27 +193,27 @@ pub fn mixed_solve(
     }
 
     // Subset to non-NA observations
-    // Z <- as.matrix(Z[not.NA,])
-    // X <- as.matrix(X[not.NA,])
-    // n <- length(not.NA)
-    // y <- matrix(y[not.NA],n,1)
+    // R: Z <- as.matrix(Z[not.NA,])
+    // R: X <- as.matrix(X[not.NA,])
+    // R: n <- length(not.NA)
+    // R: y <- matrix(y[not.NA],n,1)
     let n = not_na.len();
     let y_vec: DVector<f64> = DVector::from_iterator(n, not_na.iter().map(|&i| y[i]));
     let z_mat = DMatrix::from_fn(n, m, |i, j| z_full[(not_na[i], j)]);
     let x_mat = DMatrix::from_fn(n, p, |i, j| x_full[(not_na[i], j)]);
 
-    // XtX <- crossprod(X, X)
+    // R: XtX <- crossprod(X, X)
     let xtx = x_mat.transpose() * &x_mat;
 
-    // rank.X <- qr(XtX)$rank
+    // R: rank.X <- qr(XtX)$rank
     // if (rank.X < p) {stop("X not full rank")}
-    // XtXinv <- solve(XtX)
+    // R: XtXinv <- solve(XtX)
     let xtx_inv = xtx
         .clone()
         .try_inverse()
         .ok_or_else(|| anyhow!("X not full rank"))?;
 
-    // S <- diag(n) - tcrossprod(X%*%XtXinv,X)
+    // R: S <- diag(n) - tcrossprod(X%*%XtXinv,X)
     // S = I - X @ XtXinv @ X'
     let x_xtxinv = &x_mat * &xtx_inv;
     let s_mat = DMatrix::identity(n, n) - &x_xtxinv * x_mat.transpose();
@@ -196,12 +233,12 @@ pub fn mixed_solve(
         // EIGEN BRANCH: spectral.method == "eigen"
         // ============================================================
 
-        // offset <- sqrt(n)
+        // R: offset <- sqrt(n)
         let offset = (n as f64).sqrt();
 
         // Hb computation
         let hb: DMatrix<f64> = if let Some(k_mat) = k {
-            // Hb <- tcrossprod(Z%*%K,Z) + offset*diag(n)
+            // R: Hb <- tcrossprod(Z%*%K,Z) + offset*diag(n)
             let zk = &z_mat * k_mat;
             let zkzt = &zk * z_mat.transpose();
             let mut hb = zkzt;
@@ -210,7 +247,7 @@ pub fn mixed_solve(
             }
             hb
         } else {
-            // Hb <- tcrossprod(Z,Z) + offset*diag(n)
+            // R: Hb <- tcrossprod(Z,Z) + offset*diag(n)
             let zzt = &z_mat * z_mat.transpose();
             let mut hb = zzt;
             for i in 0..n {
@@ -219,7 +256,7 @@ pub fn mixed_solve(
             hb
         };
 
-        // Hb.system <- eigen(Hb, symmetric = TRUE)
+        // R: Hb.system <- eigen(Hb, symmetric = TRUE)
         let hb_eig = SymmetricEigen::new(hb.clone());
 
         // NOTE: R's eigen() returns eigenvalues in DESCENDING order.
@@ -234,7 +271,7 @@ pub fn mixed_solve(
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        // phi <- Hb.system$values - offset (in descending order)
+        // R: phi <- Hb.system$values - offset (in descending order)
         phi = hb_indices
             .iter()
             .map(|&i| hb_eig.eigenvalues[i] - offset)
@@ -246,13 +283,13 @@ pub fn mixed_solve(
             return Err(anyhow!("K not positive semi-definite (min phi = {})", min_phi));
         }
 
-        // U <- Hb.system$vectors (columns in descending eigenvalue order)
+        // R: U <- Hb.system$vectors (columns in descending eigenvalue order)
         u_mat = DMatrix::from_fn(n, n, |i, j| hb_eig.eigenvectors[(i, hb_indices[j])]);
 
-        // SHbS <- S %*% Hb %*% S
+        // R: SHbS <- S %*% Hb %*% S
         let shbs = &s_mat * &hb * &s_mat;
 
-        // SHbS.system <- eigen(SHbS, symmetric = TRUE)
+        // R: SHbS.system <- eigen(SHbS, symmetric = TRUE)
         let shbs_eig = SymmetricEigen::new(shbs);
 
         // Create sorted indices for SHbS eigenvalues (descending order)
@@ -263,7 +300,7 @@ pub fn mixed_solve(
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        // theta <- SHbS.system$values[1:(n - p)] - offset
+        // R: theta <- SHbS.system$values[1:(n - p)] - offset
         // R takes first n-p eigenvalues (largest, in descending order)
         let n_theta = n - p;
         theta = shbs_indices
@@ -272,7 +309,7 @@ pub fn mixed_solve(
             .map(|&i| shbs_eig.eigenvalues[i] - offset)
             .collect();
 
-        // Q <- SHbS.system$vectors[, 1:(n - p)]
+        // R: Q <- SHbS.system$vectors[, 1:(n - p)]
         // Take columns corresponding to the largest n_theta eigenvalues
         q_mat = DMatrix::from_fn(n, n_theta, |i, j| {
             shbs_eig.eigenvectors[(i, shbs_indices[j])]
@@ -285,7 +322,7 @@ pub fn mixed_solve(
         // B = chol(K) if K provided (with jitter on diagonal)
         let zbt: DMatrix<f64> = if let Some(k_mat) = k {
             // diag(K) <- diag(K) + 1e-6
-            // B <- try(chol(K),silent=TRUE)
+            // R: B <- try(chol(K),silent=TRUE)
             let mut k_jittered = k_mat.clone();
             for i in 0..m {
                 k_jittered[(i, i)] += 1e-6;
@@ -293,7 +330,7 @@ pub fn mixed_solve(
             let chol = k_jittered
                 .cholesky()
                 .ok_or_else(|| anyhow!("K not positive semi-definite"))?;
-            // ZBt <- tcrossprod(Z,B)
+            // R: ZBt <- tcrossprod(Z,B)
             // In R, chol() returns upper triangular, so B = chol(K)
             // tcrossprod(Z, B) = Z @ B'
             // nalgebra cholesky().l() returns lower triangular L where K = L @ L'
@@ -301,20 +338,20 @@ pub fn mixed_solve(
             let b_t = chol.l().transpose(); // This is the upper triangular
             &z_mat * &b_t.transpose() // tcrossprod(Z, B) = Z @ B' where B is upper triangular
         } else {
-            // ZBt <- Z
+            // R: ZBt <- Z
             z_mat.clone()
         };
 
-        // svd.ZBt <- svd(ZBt,nu=n)
+        // R: svd.ZBt <- svd(ZBt,nu=n)
         let zbt_faer = nalgebra_to_faer(&zbt);
         let svd_zbt = zbt_faer.svd();
         let u_full = faer_to_nalgebra(&svd_zbt.u());
         let d_vals = svd_zbt.s_diagonal();
 
-        // U <- svd.ZBt$u
+        // R: U <- svd.ZBt$u
         u_mat = u_full;
 
-        // phi <- c(svd.ZBt$d^2,rep(0,n-m))
+        // R: phi <- c(svd.ZBt$d^2,rep(0,n-m))
         phi = (0..n)
             .map(|i| {
                 if i < d_vals.nrows() {
@@ -326,10 +363,10 @@ pub fn mixed_solve(
             })
             .collect();
 
-        // SZBt <- S %*% ZBt
+        // R: SZBt <- S %*% ZBt
         let szbt = &s_mat * &zbt;
 
-        // svd.SZBt <- try(svd(SZBt),silent=TRUE)
+        // R: svd.SZBt <- try(svd(SZBt),silent=TRUE)
         // if (inherits(svd.SZBt,what="try-error")) {
         //   svd.SZBt <- svd(SZBt+matrix(1e-10,nrow=nrow(SZBt),ncol=ncol(SZBt)))
         // }
@@ -338,7 +375,7 @@ pub fn mixed_solve(
         let u_szbt = faer_to_nalgebra(&svd_szbt.u());
         let d_szbt = svd_szbt.s_diagonal();
 
-        // QR <- qr(cbind(X,svd.SZBt$u))
+        // R: QR <- qr(cbind(X,svd.SZBt$u))
         let n_u_cols = u_szbt.ncols();
         let mut combined = DMatrix::zeros(n, p + n_u_cols);
         for i in 0..n {
@@ -353,17 +390,17 @@ pub fn mixed_solve(
         let combined_faer = nalgebra_to_faer(&combined);
         let qr = combined_faer.qr();
 
-        // Q <- qr.Q(QR,complete=TRUE)[,(p+1):n]
+        // R: Q <- qr.Q(QR,complete=TRUE)[,(p+1):n]
         let q_full = faer_to_nalgebra(&qr.compute_q().as_ref());
         let q_complement = q_full.columns(p, n - p).into_owned();
         q_mat = q_complement;
 
-        // R <- qr.R(QR)[p+1:m,p+1:m]
+        // R: R <- qr.R(QR)[p+1:m,p+1:m]
         let r_faer = qr.compute_r();
         let r_full = faer_mat_to_nalgebra(&r_faer);
 
-        // ans <- try(solve(t(R^2), svd.SZBt$d^2),silent=TRUE)
-        // theta <- c(ans,rep(0, n - p - m))
+        // R: ans <- try(solve(t(R^2), svd.SZBt$d^2),silent=TRUE)
+        // R: theta <- c(ans,rep(0, n - p - m))
         let r22_size = m.min(r_full.nrows().saturating_sub(p)).min(r_full.ncols().saturating_sub(p));
 
         let theta_result: Result<Vec<f64>, ()> = if r22_size > 0 && d_szbt.nrows() > 0 {
@@ -421,17 +458,17 @@ pub fn mixed_solve(
         };
     }
 
-    // omega <- crossprod(Q, y)
+    // R: omega <- crossprod(Q, y)
     let omega = q_mat.transpose() * &y_vec;
 
-    // omega.sq <- omega^2
+    // R: omega.sq <- omega^2
     let omega_sq: Vec<f64> = omega.iter().map(|v| v * v).collect();
 
     // Optimization
     let (lambda_opt, obj_val, df): (f64, f64, usize);
 
     if opts.method == Method::ML {
-        // f.ML <- function(lambda, n, theta, omega.sq, phi) {
+        // R: f.ML <- function(lambda, n, theta, omega.sq, phi) {
         //   n * log(sum(omega.sq/(theta + lambda))) + sum(log(phi + lambda))
         // }
         let f_ml = |lambda: f64| -> f64 {
@@ -455,7 +492,7 @@ pub fn mixed_solve(
         obj_val = opt_obj;
         df = n;
     } else {
-        // f.REML <- function(lambda, n.p, theta, omega.sq) {
+        // R: f.REML <- function(lambda, n.p, theta, omega.sq) {
         //   n.p * log(sum(omega.sq/(theta + lambda))) + sum(log(theta + lambda))
         // }
         let n_p = n - p;
@@ -481,7 +518,7 @@ pub fn mixed_solve(
         df = n - p;
     }
 
-    // Vu.opt <- sum(omega.sq/(theta + lambda.opt))/df
+    // R: Vu.opt <- sum(omega.sq/(theta + lambda.opt))/df
     let vu_opt: f64 = omega_sq
         .iter()
         .zip(theta.iter())
@@ -489,10 +526,10 @@ pub fn mixed_solve(
         .sum::<f64>()
         / (df as f64);
 
-    // Ve.opt <- lambda.opt * Vu.opt
+    // R: Ve.opt <- lambda.opt * Vu.opt
     let ve_opt = lambda_opt * vu_opt;
 
-    // Hinv <- U %*% (t(U)/(phi+lambda.opt))
+    // R: Hinv <- U %*% (t(U)/(phi+lambda.opt))
     // Hinv[i,j] = sum_k U[i,k] * U[j,k] / (phi[k] + lambda)
     let mut hinv = DMatrix::zeros(n, n);
     for i in 0..n {
@@ -505,11 +542,11 @@ pub fn mixed_solve(
         }
     }
 
-    // W <- crossprod(X,Hinv%*%X)
+    // R: W <- crossprod(X,Hinv%*%X)
     let hinv_x = &hinv * &x_mat;
     let w = x_mat.transpose() * &hinv_x;
 
-    // beta <- array(solve(W,crossprod(X,Hinv%*%y)))
+    // R: beta <- array(solve(W,crossprod(X,Hinv%*%y)))
     let w_inv = w
         .clone()
         .try_inverse()
@@ -520,17 +557,17 @@ pub fn mixed_solve(
     // KZt computation
     // if (is.null(K)) { KZt <- t(Z) } else { KZt <- tcrossprod(K,Z) }
     let kzt: DMatrix<f64> = if let Some(k_mat) = k {
-        // KZt <- tcrossprod(K,Z) = K @ Z'
+        // R: KZt <- tcrossprod(K,Z) = K @ Z'
         k_mat * z_mat.transpose()
     } else {
-        // KZt <- t(Z)
+        // R: KZt <- t(Z)
         z_mat.transpose()
     };
 
-    // KZt.Hinv <- KZt %*% Hinv
+    // R: KZt.Hinv <- KZt %*% Hinv
     let kzt_hinv = &kzt * &hinv;
 
-    // u <- array(KZt.Hinv %*% (y - X%*%beta))
+    // R: u <- array(KZt.Hinv %*% (y - X%*%beta))
     let resid = &y_vec - &x_mat * &beta;
     let u_blup = &kzt_hinv * &resid;
 
@@ -539,22 +576,22 @@ pub fn mixed_solve(
 
     // Standard errors (if SE=TRUE)
     let (beta_se, u_se) = if opts.se {
-        // Winv <- solve(W)
+        // R: Winv <- solve(W)
         let winv = w_inv.clone();
 
-        // beta.SE <- array(sqrt(Vu.opt*diag(Winv)))
+        // R: beta.SE <- array(sqrt(Vu.opt*diag(Winv)))
         let beta_se_vec: DVector<f64> =
             DVector::from_fn(p, |i, _| (vu_opt * winv[(i, i)]).sqrt());
 
-        // WW <- tcrossprod(KZt.Hinv,KZt)
+        // R: WW <- tcrossprod(KZt.Hinv,KZt)
         let ww = &kzt_hinv * kzt.transpose();
 
-        // WWW <- KZt.Hinv%*%X
+        // R: WWW <- KZt.Hinv%*%X
         let www = &kzt_hinv * &x_mat;
 
         // u.SE computation
         let u_se_vec: DVector<f64> = if k.is_none() {
-            // u.SE <- array(sqrt(Vu.opt * (rep(1,m) - diag(WW) + diag(tcrossprod(WWW%*%Winv,WWW)))))
+            // R: u.SE <- array(sqrt(Vu.opt * (rep(1,m) - diag(WW) + diag(tcrossprod(WWW%*%Winv,WWW)))))
             let www_winv = &www * &winv;
             let www_term = &www_winv * www.transpose();
             DVector::from_fn(m, |i, _| {
@@ -566,7 +603,7 @@ pub fn mixed_solve(
                 }
             })
         } else {
-            // u.SE <- array(sqrt(Vu.opt * (diag(K) - diag(WW) + diag(tcrossprod(WWW%*%Winv,WWW)))))
+            // R: u.SE <- array(sqrt(Vu.opt * (diag(K) - diag(WW) + diag(tcrossprod(WWW%*%Winv,WWW)))))
             let k_mat = k.unwrap();
             let www_winv = &www * &winv;
             let www_term = &www_winv * www.transpose();
