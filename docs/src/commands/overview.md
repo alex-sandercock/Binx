@@ -42,27 +42,27 @@ binx gwas --help      # Help for specific command
 
 ```bash
 # 1. Convert VCF to Binx format
-binx convert --vcf data.vcf.gz --format gwaspoly --output geno.tsv
+binx convert --vcf data.vcf.gz --output geno.tsv --format gwaspoly
 
 # 2. Compute kinship matrix
-binx kinship --geno geno.tsv --output kinship.tsv
+binx kinship --geno geno.tsv --ploidy 4 --out kinship.tsv
 
 # 3. Run GWAS
 binx gwas --geno geno.tsv --pheno pheno.csv --trait yield \
           --kinship kinship.tsv --ploidy 4 --out results.csv
 
 # 4. Visualize results
-binx plot --input results.csv --plot-type manhattan --output manhattan.svg
+binx plot --input results.csv --output manhattan.svg --plot-type manhattan
 ```
 
-### With Dosage Estimation
+### With Dosage Estimation from VCF
 
 ```bash
-# 1. Estimate dosages from read counts
-binx dosage --input counts.tsv --ploidy 4 --output geno.tsv
+# 1. Estimate dosages from VCF with allele depths
+binx dosage --vcf data.vcf.gz --ploidy 4 --output geno.tsv --format gwaspoly
 
 # 2. Continue with GWAS...
-binx gwas --geno geno.tsv --pheno pheno.csv --trait yield ...
+binx gwas --geno geno.tsv --pheno pheno.csv --out results.csv --trait yield --ploidy 4
 ```
 
 ## Common Options
@@ -72,27 +72,17 @@ These options are available across multiple commands:
 | Option | Description |
 |--------|-------------|
 | `--help`, `-h` | Display help information |
-| `--version`, `-V` | Display version information |
-| `--verbose`, `-v` | Increase output verbosity |
-| `--threads`, `-t` | Number of threads (where applicable) |
-| `--output`, `-o` | Output file path |
+| `--version`, `-V` | Display version information (top-level only) |
+| `--verbose` | Enable verbose output (where applicable) |
+| `--threads` | Number of threads (where applicable) |
+| `--output` or `--out` | Output file path (varies by command) |
 
 ## Exit Codes
 
 | Code | Meaning |
 |------|---------|
 | `0` | Success |
-| `1` | General error |
-| `2` | Invalid arguments |
-| `3` | File not found |
-| `4` | File format error |
-
-## Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `BINX_THREADS` | Default thread count |
-| `BINX_VERBOSE` | Default verbosity level |
+| `1` | Error (invalid arguments, file not found, processing error, etc.) |
 
 ## Next Steps
 
