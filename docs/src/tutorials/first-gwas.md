@@ -182,8 +182,8 @@ binx plot \
 
 A good QQ plot shows:
 - Points following the diagonal line (no inflation)
-- Deviation at the tail (true associations)
-- Lambda (λ) close to 1.0
+- Deviation only at the tail (true associations)
+- Points within the 95% confidence band
 
 ## Step 6: Extract Significant QTLs
 
@@ -296,8 +296,9 @@ echo "Done! Results in $OUTDIR/"
 
 Ensure sample IDs in phenotype file exactly match genotype column headers (case-sensitive).
 
-### Inflated QQ plot (λ > 1.1)
+### Inflated QQ plot (points above diagonal)
 
+If your QQ plot shows systematic deviation above the diagonal line:
 - Try including principal components (`--n-pc 5`)
 - Check for population structure in your data
 - Use LOCO kinship (`--loco`)

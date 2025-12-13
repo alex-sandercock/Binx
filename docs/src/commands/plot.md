@@ -65,8 +65,8 @@ binx plot \
 
 The plot includes:
 - Expected vs observed -log10(p)
-- Genomic inflation factor (λ)
 - 95% confidence band
+- Diagonal reference line for visual inflation assessment
 
 > **Beta Feature:** When `--model` is not specified, all models from the results file are plotted together with different colors. This multi-model visualization is currently in beta.
 
