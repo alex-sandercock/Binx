@@ -44,6 +44,5 @@ Output from `binx qtl`:
 ## Plot Outputs
 
 `binx plot` supports:
-- `.svg` - Scalable Vector Graphics
+- `.svg` - Scalable Vector Graphics (recommended for publication)
 - `.png` - PNG raster image
-- `.pdf` - PDF document

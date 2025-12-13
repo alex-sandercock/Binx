@@ -14,6 +14,8 @@ The `qtl` command processes GWAS results to identify significant quantitative tr
 
 > **Important:** The input file must contain a `threshold` column. Use `binx gwas --threshold` to generate results with thresholds, or `binx threshold` to calculate thresholds separately.
 
+> **Tip:** If your results file doesn't have a threshold column, see [Adding Thresholds to Existing Results](threshold.md#adding-thresholds-to-existing-results) for instructions on how to add one.
+
 ## Options
 
 | Option | Default | Description |

@@ -110,16 +110,18 @@ head gwas_results.csv
 ```
 
 ```csv
-marker_id,chrom,pos,model,effect,stderr,pvalue,log10p,maf,n
-SNP_1_1000,1,1000,additive,0.123,0.089,0.167,0.78,0.32,195
-SNP_1_2500,1,2500,additive,0.521,0.102,3.2e-07,6.49,0.28,198
+marker_id,chrom,pos,model,score,p_value,effect,n_obs,threshold
+SNP_1_1000,1,1000,additive,0.78,0.167,0.123,195,5.0
+SNP_1_2500,1,2500,additive,6.49,3.2e-07,0.521,198,5.0
 ...
 ```
 
 Key columns:
+- `score`: -log10 transformed p-value (higher = more significant)
+- `p_value`: Probability of seeing this effect by chance
 - `effect`: How much the trait changes per allele dosage unit
-- `pvalue`: Probability of seeing this effect by chance
-- `log10p`: -log10 transformed p-value (higher = more significant)
+- `n_obs`: Sample size (non-missing)
+- `threshold`: Significance threshold used
 
 ## Step 4: Calculate Significance Threshold
 
@@ -181,14 +183,26 @@ A good QQ plot shows:
 
 ## Step 6: Extract Significant QTLs
 
-Identify significant loci:
+First, run GWAS with threshold calculation to get a threshold column:
+
+```bash
+binx gwas \
+  --geno genotypes.tsv \
+  --pheno phenotypes.csv \
+  --trait yield \
+  --kinship kinship.tsv \
+  --ploidy 4 \
+  --models additive \
+  --threshold bonferroni \
+  --out gwas_results.csv
+```
+
+Then extract significant QTLs:
 
 ```bash
 binx qtl \
   --input gwas_results.csv \
-  --threshold 5.3 \
   --bp-window 5000000 \
-  --best-per-window \
   --output significant_qtls.csv
 ```
 
@@ -197,10 +211,12 @@ cat significant_qtls.csv
 ```
 
 ```csv
-marker_id,chrom,pos,model,effect,pvalue,log10p,qtl_id
-SNP_3_15234000,3,15234000,additive,0.82,1.2e-08,7.92,QTL_1
-SNP_7_8234000,7,8234000,additive,0.45,3.1e-06,5.51,QTL_2
+marker_id,chrom,pos,model,score,effect,threshold
+SNP_3_15234000,3,15234000,additive,7.92,0.82,5.30
+SNP_7_8234000,7,8234000,additive,5.51,0.45,5.30
 ```
+
+> **Note:** The input file must have a `threshold` column. Use `binx gwas --threshold` to generate results with thresholds.
 
 ## Step 7: Interpret Results
 
@@ -237,9 +253,9 @@ mkdir -p $OUTDIR
 
 # Step 1: Compute kinship
 echo "Computing kinship matrix..."
-binx kinship --geno $GENO --ploidy $PLOIDY --output $OUTDIR/kinship.tsv
+binx kinship --geno $GENO --ploidy $PLOIDY --out $OUTDIR/kinship.tsv
 
-# Step 2: Run GWAS
+# Step 2: Run GWAS with threshold calculation
 echo "Running GWAS..."
 binx gwas \
   --geno $GENO \
@@ -248,20 +264,17 @@ binx gwas \
   --kinship $OUTDIR/kinship.tsv \
   --ploidy $PLOIDY \
   --models additive \
+  --threshold bonferroni \
   --out $OUTDIR/gwas_results.csv
 
-# Step 3: Calculate threshold
-echo "Calculating threshold..."
-binx threshold --results $OUTDIR/gwas_results.csv --method bonferroni --alpha 0.05
-
-# Step 4: Generate plots
+# Step 3: Generate plots
 echo "Creating plots..."
-binx plot --input $OUTDIR/gwas_results.csv --plot-type manhattan --threshold 5.3 --output $OUTDIR/manhattan.svg
+binx plot --input $OUTDIR/gwas_results.csv --plot-type manhattan --output $OUTDIR/manhattan.svg
 binx plot --input $OUTDIR/gwas_results.csv --plot-type qq --output $OUTDIR/qq.svg
 
-# Step 5: Extract QTLs
+# Step 4: Extract QTLs
 echo "Extracting QTLs..."
-binx qtl --input $OUTDIR/gwas_results.csv --threshold 5.3 --bp-window 5000000 --output $OUTDIR/qtls.csv
+binx qtl --input $OUTDIR/gwas_results.csv --bp-window 5000000 --output $OUTDIR/qtls.csv
 
 echo "Done! Results in $OUTDIR/"
 ```

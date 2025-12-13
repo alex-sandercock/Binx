@@ -23,7 +23,7 @@ The standard additive model assumes each allele copy contributes equally to the 
 binx gwas --ploidy 2 --models additive ...
 ```
 
-### Dominant (Reference)
+### 1-dom-ref (Reference Dominant)
 
 Tests if the reference allele (A) is dominant.
 
@@ -35,10 +35,10 @@ Tests if the reference allele (A) is dominant.
 **Use when:** One copy of B is sufficient to express the B phenotype.
 
 ```bash
-binx gwas --ploidy 2 --models dominant-ref ...
+binx gwas --ploidy 2 --models 1-dom-ref ...
 ```
 
-### Dominant (Alternate)
+### 1-dom-alt (Alternate Dominant)
 
 Tests if the alternate allele (B) is dominant.
 
@@ -50,7 +50,7 @@ Tests if the alternate allele (B) is dominant.
 **Use when:** Two copies of B are needed to express the B phenotype.
 
 ```bash
-binx gwas --ploidy 2 --models dominant-alt ...
+binx gwas --ploidy 2 --models 1-dom-alt ...
 ```
 
 ## Tetraploid Models (ploidy=4)
@@ -82,49 +82,67 @@ No assumption about inheritance pattern. Estimates separate effects for each gen
 
 **Note:** Uses more degrees of freedom, reducing power but catching complex patterns.
 
-### Simplex Dominant
+### 1-dom (Simplex Dominant)
 
-One copy of B is sufficient for effect.
+One copy of B is sufficient for effect. Using `1-dom` tests both `1-dom-ref` and `1-dom-alt`.
 
 | Genotype | AAAA | AAAB | AABB | ABBB | BBBB |
 |----------|------|------|------|------|------|
 | Dosage | 0 | 1 | 2 | 3 | 4 |
-| Model value | 0 | 1 | 1 | 1 | 1 |
+| 1-dom-ref | 0 | 1 | 1 | 1 | 1 |
+| 1-dom-alt | 0 | 0 | 0 | 0 | 1 |
 
 **Use when:** Trait exhibits complete dominance; presence/absence effect.
 
-### Duplex Dominant
+```bash
+binx gwas --ploidy 4 --models 1-dom ...
+```
 
-Two copies of B are sufficient for effect.
+### 2-dom (Duplex Dominant)
+
+Two copies of B are sufficient for effect. Using `2-dom` tests both `2-dom-ref` and `2-dom-alt`.
 
 | Genotype | AAAA | AAAB | AABB | ABBB | BBBB |
 |----------|------|------|------|------|------|
 | Dosage | 0 | 1 | 2 | 3 | 4 |
-| Model value | 0 | 0 | 1 | 1 | 1 |
+| 2-dom-ref | 0 | 0 | 1 | 1 | 1 |
+| 2-dom-alt | 0 | 0 | 0 | 1 | 1 |
 
 **Use when:** Partial dominance; two copies needed for effect.
 
-### Diploidized Additive
+```bash
+binx gwas --ploidy 4 --models 2-dom ...
+```
+
+### diplo-additive (Diploidized Additive)
 
 Treats the tetraploid as if it were diploid.
 
 | Genotype | AAAA | AAAB | AABB | ABBB | BBBB |
 |----------|------|------|------|------|------|
 | Dosage | 0 | 1 | 2 | 3 | 4 |
-| Model value | 0 | 0.5 | 1 | 1.5 | 2 |
+| Model value | 0 | 0.5 | 0.5 | 0.5 | 1 |
 
 **Use when:** Expecting diploid-like inheritance in autopolyploid.
 
-### Diploidized Dominant
+```bash
+binx gwas --ploidy 4 --models diplo-additive ...
+```
 
-Diploid-style dominance in tetraploid context.
+### diplo-general (Diploidized General)
+
+Diploid-style general model in tetraploid context (heterozygotes collapsed).
 
 | Genotype | AAAA | AAAB | AABB | ABBB | BBBB |
 |----------|------|------|------|------|------|
 | Dosage | 0 | 1 | 2 | 3 | 4 |
-| Model value | 0 | 0 | 1 | 1 | 1 |
+| Group | AA | Het | Het | Het | BB |
 
-**Use when:** Expected diploid-like dominance.
+**Use when:** Expected diploid-like inheritance with unknown dominance.
+
+```bash
+binx gwas --ploidy 4 --models diplo-general ...
+```
 
 ## Hexaploid Models (ploidy=6)
 
@@ -132,11 +150,11 @@ Similar patterns extend to hexaploids:
 
 | Model | Encoding (dosage 0-6) |
 |-------|----------------------|
-| Additive | 0, 1, 2, 3, 4, 5, 6 |
-| General | 6 dummy variables |
-| Simplex dominant | 0, 1, 1, 1, 1, 1, 1 |
-| Duplex dominant | 0, 0, 1, 1, 1, 1, 1 |
-| Triplex dominant | 0, 0, 0, 1, 1, 1, 1 |
+| `additive` | 0, 1, 2, 3, 4, 5, 6 |
+| `general` | 6 dummy variables |
+| `1-dom` | 0, 1, 1, 1, 1, 1, 1 (ref) / 0, 0, 0, 0, 0, 0, 1 (alt) |
+| `2-dom` | 0, 0, 1, 1, 1, 1, 1 (ref) / 0, 0, 0, 0, 0, 1, 1 (alt) |
+| `3-dom` | 0, 0, 0, 1, 1, 1, 1 (ref) / 0, 0, 0, 0, 1, 1, 1 (alt) |
 
 ## Choosing Models
 
@@ -153,7 +171,7 @@ Similar patterns extend to hexaploids:
 |----------|-------------------|
 | Unknown inheritance | `additive,general` |
 | Quantitative trait | `additive` |
-| Disease resistance | `additive,simplex-dom,duplex-dom` |
+| Disease resistance | `additive,1-dom,2-dom` |
 | Exploratory analysis | `additive,general` |
 | Confirmation study | Model from prior evidence |
 
@@ -204,17 +222,17 @@ binx gwas \
   --pheno pheno.csv \
   --trait yield \
   --ploidy 4 \
-  --models additive,simplex-dom \
+  --models additive,1-dom \
   --out results.csv
 
 # Find markers significant in one but not other
 awk -F',' 'NR==1 {print; next}
   {key=$1","$2","$3; if(key in seen) {
-    if(($4=="additive" && $8>5 && seen[key]<5) ||
-       ($4!="additive" && $8<5 && seen[key]>5))
+    if(($4=="additive" && $5>5 && seen[key]<5) ||
+       ($4!="additive" && $5<5 && seen[key]>5))
       print key, "differs"
   }
-  seen[key]=$8}' results.csv
+  seen[key]=$5}' results.csv
 ```
 
 ### All Tetraploid Models
@@ -225,7 +243,7 @@ binx gwas \
   --pheno pheno.csv \
   --trait yield \
   --ploidy 4 \
-  --models additive,general,simplex-dom,duplex-dom,diplo-add,diplo-dom \
+  --models additive,general,1-dom,2-dom,diplo-additive,diplo-general \
   --out all_models.csv
 ```
 

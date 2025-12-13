@@ -5,7 +5,7 @@ Compute kinship (genomic relationship) matrices from genotype data.
 ## Synopsis
 
 ```bash
-binx kinship [OPTIONS] --geno <FILE>
+binx kinship --geno <FILE> --ploidy <INT> --out <FILE> [OPTIONS]
 ```
 
 ## Description
@@ -17,14 +17,14 @@ The `kinship` command computes a genomic relationship matrix (GRM) from marker d
 | Argument | Description |
 |----------|-------------|
 | `--geno <FILE>` | Path to genotype file (TSV/CSV with dosages) |
+| `--ploidy <INT>` | Ploidy level (e.g., 2, 4, 6) |
+| `--out <FILE>` | Output file path |
 
 ## Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--method <METHOD>` | vanraden | Kinship method (vanraden, gwaspoly) |
-| `--out <FILE>` | - | Output file path (required) |
-| `--ploidy <INT>` | 2 | Ploidy level |
+| `--method <METHOD>` | vanraden | Kinship method: `vanraden` or `gwaspoly` |
 
 ## Methods
 
@@ -53,10 +53,13 @@ Where M is centered by column means and normalized to have unit diagonal mean.
 
 ## Examples
 
-### Basic Usage
+### Basic Usage (Tetraploid)
 
 ```bash
-binx kinship --geno genotypes.tsv --out kinship.tsv
+binx kinship \
+  --geno genotypes.tsv \
+  --ploidy 4 \
+  --out kinship.tsv
 ```
 
 ### Using GWASpoly Method
@@ -64,16 +67,17 @@ binx kinship --geno genotypes.tsv --out kinship.tsv
 ```bash
 binx kinship \
   --geno genotypes.tsv \
+  --ploidy 4 \
   --method gwaspoly \
   --out kinship.tsv
 ```
 
-### For Tetraploids
+### For Diploids
 
 ```bash
 binx kinship \
   --geno genotypes.tsv \
-  --ploidy 4 \
+  --ploidy 2 \
   --out kinship.tsv
 ```
 

@@ -145,8 +145,9 @@ Use `binx kinship` to compute from genotypes:
 ```bash
 binx kinship \
   --geno genotypes.tsv \
+  --ploidy 4 \
   --method vanraden \
-  --output kinship.tsv
+  --out kinship.tsv
 ```
 
 ### Kinship Methods
@@ -154,7 +155,7 @@ binx kinship \
 | Method | Description |
 |--------|-------------|
 | `vanraden` | VanRaden (2008) method 1 (default) |
-| `vanraden2` | VanRaden (2008) method 2 |
+| `gwaspoly` | GWASpoly-style kinship |
 
 ---
 
@@ -171,16 +172,17 @@ Binx can import VCF (Variant Call Format) files via `binx convert`.
 ### Example Conversion
 
 ```bash
-# Basic conversion
-binx convert --vcf input.vcf.gz --format gwaspoly --output genotypes.tsv
-
-# With specific options
+# Convert VCF to GWASpoly format (using GT field)
 binx convert \
   --vcf input.vcf.gz \
   --format gwaspoly \
-  --min-maf 0.05 \
-  --max-missing 0.2 \
   --output genotypes.tsv
+
+# Convert VCF to allele depths for dosage estimation (using AD field)
+binx convert \
+  --vcf input.vcf.gz \
+  --format csv \
+  --output allele_depths.csv
 ```
 
 ---

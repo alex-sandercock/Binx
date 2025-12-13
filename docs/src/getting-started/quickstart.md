@@ -85,16 +85,18 @@ binx gwas \
 The output CSV contains association results for each marker:
 
 ```csv
-marker_id,chrom,pos,model,effect,stderr,pvalue,log10p
-SNP001,1,1000,additive,0.52,0.12,3.2e-05,4.49
-SNP002,1,2000,additive,0.08,0.11,0.47,0.33
+marker_id,chrom,pos,model,score,p_value,effect,n_obs,threshold
+SNP001,1,1000,additive,4.49,3.2e-05,0.52,198,5.0
+SNP002,1,2000,additive,0.33,0.47,0.08,200,5.0
 ...
 ```
 
 ### Key columns:
+- `score`: -log10 transformed p-value (useful for plotting)
+- `p_value`: Association p-value
 - `effect`: Effect size estimate
-- `pvalue`: Association p-value
-- `log10p`: -log10 transformed p-value (useful for plotting)
+- `n_obs`: Sample size (non-missing)
+- `threshold`: Significance threshold used
 
 ## Step 5: Visualize Results
 
@@ -158,7 +160,7 @@ binx gwas \
   --pheno $PHENO \
   --trait $TRAIT \
   --ploidy $PLOIDY \
-  --models additive,general,simplex,duplex \
+  --models additive,general,1-dom,2-dom \
   --out results/gwas_results.csv
 
 # Step 3: Generate plots

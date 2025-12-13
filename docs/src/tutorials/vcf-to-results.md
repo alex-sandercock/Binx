@@ -33,8 +33,6 @@ echo "Converting VCF..."
 binx convert \
   --vcf $VCF \
   --format gwaspoly \
-  --min-maf 0.05 \
-  --max-missing 0.20 \
   --output $OUTDIR/genotypes.tsv
 
 # === Step 2: Compute Kinship ===
@@ -54,6 +52,7 @@ binx gwas \
   --ploidy $PLOIDY \
   --models additive,general \
   --loco \
+  --threshold bonferroni \
   --out $OUTDIR/gwas_results.csv
 
 # === Step 4: Visualize ===
@@ -62,7 +61,6 @@ binx plot \
   --input $OUTDIR/gwas_results.csv \
   --plot-type manhattan \
   --model additive \
-  --threshold 5 \
   --output $OUTDIR/manhattan.svg
 
 binx plot \
@@ -75,7 +73,6 @@ binx plot \
 echo "Extracting QTLs..."
 binx qtl \
   --input $OUTDIR/gwas_results.csv \
-  --threshold 5 \
   --bp-window 5000000 \
   --output $OUTDIR/qtls.csv
 

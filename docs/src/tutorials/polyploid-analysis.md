@@ -50,7 +50,7 @@ binx gwas \
   --pheno phenotypes.csv \
   --trait disease_resistance \
   --ploidy 4 \
-  --models additive,simplex-dom,duplex-dom \
+  --models additive,1-dom,2-dom \
   --out results.csv
 ```
 
@@ -87,7 +87,7 @@ binx gwas \
   --trait yield \
   --kinship kinship.tsv \
   --ploidy 4 \
-  --models additive,general,simplex-dom,duplex-dom \
+  --models additive,general,1-dom,2-dom \
   --loco \
   --out gwas_results.csv
 ```
@@ -104,7 +104,7 @@ awk -F',' 'NR>1 && $8>5 {count[$4]++} END {for(m in count) print m, count[m]}' g
 Create model-specific Manhattan plots:
 
 ```bash
-for model in additive general simplex-dom duplex-dom; do
+for model in additive general 1-dom-ref 1-dom-alt 2-dom-ref 2-dom-alt; do
   binx plot \
     --input gwas_results.csv \
     --plot-type manhattan \
@@ -120,7 +120,7 @@ done
 If a QTL is significant under:
 
 - **Additive only**: Dosage-dependent effect (each additional allele adds to trait)
-- **Simplex-dominant only**: Presence/absence effect (one copy is enough)
+- **1-dom only**: Presence/absence effect (one copy is enough)
 - **General but not additive**: Complex dominance pattern
 - **Multiple models**: Robust association, exact inheritance unclear
 
@@ -190,14 +190,14 @@ binx gwas \
   --pheno phenotypes.csv \
   --trait yield \
   --ploidy 4 \
-  --models diplo-add,diplo-dom \
+  --models diplo-additive,diplo-general \
   --out results.csv
 ```
 
 This collapses dosage categories:
-- 0, 1 → "AA-like"
-- 2 → "AB-like"  
-- 3, 4 → "BB-like"
+- 0 → "AA-like"
+- 1, 2, 3 → "AB-like" (heterozygotes)
+- 4 → "BB-like"
 
 Useful when expecting diploid-like inheritance in a polyploid.
 
