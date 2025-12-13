@@ -22,48 +22,50 @@ The `kinship` command computes a genomic relationship matrix (GRM) from marker d
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--method <METHOD>` | vanraden | Kinship method (vanraden, vanraden2) |
-| `--output <FILE>` | stdout | Output file path |
+| `--method <METHOD>` | vanraden | Kinship method (vanraden, gwaspoly) |
+| `--out <FILE>` | - | Output file path (required) |
 | `--ploidy <INT>` | 2 | Ploidy level |
-| `--min-maf <FLOAT>` | 0.0 | Minimum MAF filter |
 
 ## Methods
 
-### VanRaden Method 1 (default)
+### VanRaden (default)
 
-The standard VanRaden (2008) method:
-
-```
-K = ZZ' / (2 * Σ p(1-p))
-```
-
-Where Z is the centered and scaled genotype matrix.
-
-### VanRaden Method 2
-
-Alternative scaling:
+The standard VanRaden (2008) Method 1 additive relationship matrix, extended for polyploids:
 
 ```
-K = ZZ' / n
+K = M'M / (ploidy × Σ pq)
 ```
 
-Where n is the number of markers.
+Where:
+- M is the centered genotype matrix (markers × samples)
+- Centering: dosage - (ploidy × p)
+- p = allele frequency, q = 1-p
+
+### GWASpoly
+
+GWASpoly-style kinship matching R/GWASpoly's `set.K()` function:
+
+```
+K = MM' / mean(diag(K))
+```
+
+Where M is centered by column means and normalized to have unit diagonal mean.
 
 ## Examples
 
 ### Basic Usage
 
 ```bash
-binx kinship --geno genotypes.tsv --output kinship.tsv
+binx kinship --geno genotypes.tsv --out kinship.tsv
 ```
 
-### With MAF Filter
+### Using GWASpoly Method
 
 ```bash
 binx kinship \
   --geno genotypes.tsv \
-  --min-maf 0.05 \
-  --output kinship.tsv
+  --method gwaspoly \
+  --out kinship.tsv
 ```
 
 ### For Tetraploids
@@ -72,7 +74,7 @@ binx kinship \
 binx kinship \
   --geno genotypes.tsv \
   --ploidy 4 \
-  --output kinship.tsv
+  --out kinship.tsv
 ```
 
 ## Output Format
@@ -90,9 +92,9 @@ Sample3	0.1256	0.1892	1.0000
 
 1. **Pre-compute for multiple traits**: Compute kinship once and reuse across multiple GWAS runs
 
-2. **MAF filtering**: Consider filtering low-MAF markers which can distort the kinship matrix
+2. **Check diagonal values**: Diagonal values should be close to 1.0; much higher values may indicate inbreeding or data issues
 
-3. **Check diagonal values**: Diagonal values should be close to 1.0; much higher values may indicate inbreeding or data issues
+3. **Method selection**: Use `vanraden` (default) for standard GWAS, or `gwaspoly` for compatibility with R/GWASpoly workflows
 
 ## See Also
 

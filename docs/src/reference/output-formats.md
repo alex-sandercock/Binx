@@ -12,12 +12,11 @@ Output from `binx gwas`:
 | `chrom` | string | Chromosome |
 | `pos` | integer | Base pair position |
 | `model` | string | Genetic model used |
+| `score` | float | -log10(p-value) |
+| `p_value` | float | Association p-value |
 | `effect` | float | Effect size estimate |
-| `stderr` | float | Standard error |
-| `pvalue` | float | P-value |
-| `log10p` | float | -log10(p-value) |
-| `maf` | float | Minor allele frequency |
-| `n` | integer | Sample size |
+| `n_obs` | integer | Sample size (non-missing) |
+| `threshold` | float | Significance threshold used |
 
 ## Kinship Matrix
 
@@ -38,10 +37,9 @@ Output from `binx qtl`:
 | `chrom` | string | Chromosome |
 | `pos` | integer | Position |
 | `model` | string | Best model |
+| `score` | float | -log10(p-value) |
 | `effect` | float | Effect size |
-| `pvalue` | float | P-value |
-| `log10p` | float | -log10(p) |
-| `qtl_id` | string | QTL group identifier |
+| `threshold` | float | Significance threshold used |
 
 ## Plot Outputs
 

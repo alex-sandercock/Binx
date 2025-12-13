@@ -164,20 +164,19 @@ The output file contains the following columns:
 | `chrom` | Chromosome |
 | `pos` | Base pair position |
 | `model` | Genetic model used |
+| `score` | -log10(p-value) |
+| `p_value` | Association p-value |
 | `effect` | Effect size estimate |
-| `stderr` | Standard error of effect |
-| `pvalue` | Association p-value |
-| `log10p` | -log10(p-value) |
-| `maf` | Minor allele frequency |
-| `n` | Sample size (non-missing) |
+| `n_obs` | Sample size (non-missing) |
+| `threshold` | Significance threshold used |
 
 ### Example Output
 
 ```csv
-marker_id,chrom,pos,model,effect,stderr,pvalue,log10p,maf,n
-SNP_1_1000,1,1000,additive,0.523,0.124,3.21e-05,4.49,0.32,198
-SNP_1_2000,1,2000,additive,0.081,0.112,0.469,0.33,0.28,200
-SNP_1_3500,1,3500,additive,-0.312,0.098,1.45e-03,2.84,0.41,195
+marker_id,chrom,pos,model,score,p_value,effect,n_obs,threshold
+SNP_1_1000,1,1000,additive,4.49,3.21e-05,0.523,198,5.0
+SNP_1_2000,1,2000,additive,0.33,0.469,0.081,200,5.0
+SNP_1_3500,1,3500,additive,2.84,1.45e-03,-0.312,195,5.0
 ```
 
 ## Statistical Details

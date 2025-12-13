@@ -62,13 +62,23 @@ binx qtl \
 
 ## Output Format
 
-```csv
-marker_id,chrom,pos,model,effect,pvalue,log10p,qtl_id
-SNP_1_1500,1,1500,additive,0.82,1.2e-08,7.92,QTL_1
-SNP_3_8200,3,8200,additive,0.45,3.1e-06,5.51,QTL_2
-```
+| Column | Description |
+|--------|-------------|
+| `marker_id` | Peak marker identifier |
+| `chrom` | Chromosome |
+| `pos` | Base pair position |
+| `model` | Genetic model used |
+| `score` | -log10(p-value) |
+| `effect` | Effect size estimate |
+| `threshold` | Significance threshold used |
 
-The `qtl_id` column groups markers belonging to the same QTL region.
+### Example Output
+
+```csv
+marker_id,chrom,pos,model,score,effect,threshold
+SNP_1_1500,1,1500,additive,7.92,0.82,5.0
+SNP_3_8200,3,8200,additive,5.51,0.45,5.0
+```
 
 ## QTL Grouping Algorithm
 
