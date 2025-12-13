@@ -4,7 +4,7 @@ version: 2
 build:
   os: ubuntu-22.04
   tools:
-    rust: "1.75"
+    rust: "stable"
   commands:
     - cargo install mdbook
     - mdbook build docs --dest-dir $READTHEDOCS_OUTPUT/html
