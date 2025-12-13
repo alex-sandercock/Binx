@@ -17,12 +17,14 @@ This tutorial walks you through a complete GWAS analysis from start to finish us
 
 ## Sample Data
 
-For this tutorial, we'll use a simulated tetraploid potato dataset with:
-- 200 samples
-- 10,000 SNP markers
-- 1 quantitative trait (tuber yield)
+For this tutorial, we'll use a tetraploid potato dataset originally from the R/GWASpoly package:
+- ~1,249 samples (potato breeding lines)
+- ~9,888 SNP markers
+- Trait: vine maturity
 
-You can download sample data from the [Binx GitHub repository](https://github.com/alex-sandercock/Binx/tree/main/tests).
+This dataset is included in the Binx repository at `tests/parity/data/potato/`.
+
+> **Citation:** Rosyara, U.R., De Jong, W.S., Douches, D.S., & Endelman, J.B. (2016). Software for genome-wide association studies in autopolyploids and its application to potato. *The Plant Genome* 9(2).
 
 ## Step 1: Examine Your Data
 
@@ -30,25 +32,25 @@ First, let's look at our input files:
 
 ```bash
 # Check genotype file structure
-head -3 genotypes.tsv
+head -3 tests/parity/data/potato/new_potato_geno.csv
 ```
 
 ```
-marker_id	chrom	pos	Sample001	Sample002	Sample003	...
-SNP_1_1000	1	1000	0	2	4	...
-SNP_1_2500	1	2500	1	1	3	...
+marker,chrom,bp,AF5392-8,AF5393-1,AF5445-2,...
+solcap_snp_c2_36608,chr01,508800,1,0,1,...
+solcap_snp_c2_36658,chr01,527068,4,3,2,...
 ```
 
 ```bash
 # Check phenotype file
-head -5 phenotypes.csv
+head -5 tests/parity/data/potato/new_potato_pheno.csv
 ```
 
 ```csv
-sample_id,yield,environment
-Sample001,45.2,field_A
-Sample002,52.1,field_A
-Sample003,48.7,field_B
+id,vine.maturity,env
+AF5033-13,4.174,Hancock15
+AF5153-11,7.674,Hancock15
+AF5281-4,4.174,Hancock15
 ...
 ```
 
@@ -56,10 +58,10 @@ Verify sample counts match:
 
 ```bash
 # Count samples in genotype file (columns - 3)
-head -1 genotypes.tsv | awk -F'\t' '{print NF-3, "samples"}'
+head -1 tests/parity/data/potato/new_potato_geno.csv | awk -F',' '{print NF-3, "samples"}'
 
 # Count samples in phenotype file (lines - 1)
-wc -l < phenotypes.csv | awk '{print $1-1, "samples"}'
+wc -l < tests/parity/data/potato/new_potato_pheno.csv | awk '{print $1-1, "samples"}'
 ```
 
 ## Step 2: Compute Kinship Matrix
@@ -68,7 +70,7 @@ The kinship matrix captures genetic relationships. Computing it separately allow
 
 ```bash
 binx kinship \
-  --geno genotypes.tsv \
+  --geno tests/parity/data/potato/new_potato_geno.csv \
   --ploidy 4 \
   --output kinship.tsv
 ```
@@ -88,9 +90,9 @@ Now run the association analysis:
 
 ```bash
 binx gwas \
-  --geno genotypes.tsv \
-  --pheno phenotypes.csv \
-  --trait yield \
+  --geno tests/parity/data/potato/new_potato_geno.csv \
+  --pheno tests/parity/data/potato/new_potato_pheno.csv \
+  --trait vine.maturity \
   --kinship kinship.tsv \
   --ploidy 4 \
   --models additive \
@@ -111,8 +113,8 @@ head gwas_results.csv
 
 ```csv
 marker_id,chrom,pos,model,score,p_value,effect,n_obs,threshold
-SNP_1_1000,1,1000,additive,0.78,0.167,0.123,195,5.0
-SNP_1_2500,1,2500,additive,6.49,3.2e-07,0.521,198,5.0
+solcap_snp_c2_36608,chr01,508800,additive,0.64,0.227,0.084,1249,NA
+solcap_snp_c2_36658,chr01,527068,additive,0.29,0.508,0.050,1249,NA
 ...
 ```
 
@@ -137,8 +139,8 @@ binx threshold \
 Output:
 ```
 Method: Bonferroni
-Number of tests: 10000
-P-value threshold: 5.00e-06
+Number of tests: 9886
+P-value threshold: 5.06e-06
 -log10(p) threshold: 5.30
 ```
 
@@ -152,8 +154,8 @@ binx plot \
   --plot-type manhattan \
   --model additive \
   --threshold 5.3 \
-  --title "Tuber Yield GWAS" \
-  --output manhattan.svg
+  --title "Vine Maturity GWAS" \
+  --output manhattan.png
 ```
 
 ![Manhattan Plot Example](../assets/manhattan_example.png)
@@ -171,7 +173,7 @@ binx plot \
   --input gwas_results.csv \
   --plot-type qq \
   --model additive \
-  --output qq.svg
+  --output qq.png
 ```
 
 ![QQ Plot Example](../assets/qq_example.png)
@@ -187,9 +189,9 @@ First, run GWAS with threshold calculation to get a threshold column:
 
 ```bash
 binx gwas \
-  --geno genotypes.tsv \
-  --pheno phenotypes.csv \
-  --trait yield \
+  --geno tests/parity/data/potato/new_potato_geno.csv \
+  --pheno tests/parity/data/potato/new_potato_pheno.csv \
+  --trait vine.maturity \
   --kinship kinship.tsv \
   --ploidy 4 \
   --models additive \
@@ -212,8 +214,8 @@ cat significant_qtls.csv
 
 ```csv
 marker_id,chrom,pos,model,score,effect,threshold
-SNP_3_15234000,3,15234000,additive,7.92,0.82,5.30
-SNP_7_8234000,7,8234000,additive,5.51,0.45,5.30
+solcap_snp_c2_25522,chr05,4561232,additive,6.12,0.52,5.30
+PotVar0067031,chr05,5193547,additive,5.89,0.48,5.30
 ```
 
 > **Note:** The input file must have a `threshold` column. Use `binx gwas --threshold` to generate results with thresholds.
@@ -241,10 +243,10 @@ Here's the full analysis as a script:
 #!/bin/bash
 set -e
 
-# Configuration
-GENO="genotypes.tsv"
-PHENO="phenotypes.csv"
-TRAIT="yield"
+# Configuration - using R/GWASpoly potato dataset
+GENO="tests/parity/data/potato/new_potato_geno.csv"
+PHENO="tests/parity/data/potato/new_potato_pheno.csv"
+TRAIT="vine.maturity"
 PLOIDY=4
 OUTDIR="results"
 
@@ -269,8 +271,8 @@ binx gwas \
 
 # Step 3: Generate plots
 echo "Creating plots..."
-binx plot --input $OUTDIR/gwas_results.csv --plot-type manhattan --output $OUTDIR/manhattan.svg
-binx plot --input $OUTDIR/gwas_results.csv --plot-type qq --output $OUTDIR/qq.svg
+binx plot --input $OUTDIR/gwas_results.csv --plot-type manhattan --output $OUTDIR/manhattan.png
+binx plot --input $OUTDIR/gwas_results.csv --plot-type qq --output $OUTDIR/qq.png
 
 # Step 4: Extract QTLs
 echo "Extracting QTLs..."
