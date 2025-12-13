@@ -5,7 +5,7 @@ Perform genome-wide association studies (GWAS) using GWASpoly-style methods with
 ## Synopsis
 
 ```bash
-binx gwas [OPTIONS] --geno <FILE> --pheno <FILE> --trait <NAME>
+binx gwas --geno <FILE> --pheno <FILE> --out <FILE> --trait <NAME> --ploidy <INT> [OPTIONS]
 ```
 
 ## Description
@@ -22,36 +22,52 @@ Key features:
 
 | Argument | Description |
 |----------|-------------|
-| `--geno <FILE>` | Path to genotype file (TSV/CSV with dosages) |
-| `--pheno <FILE>` | Path to phenotype file (TSV/CSV) |
-| `--trait <NAME>` | Name of the trait column to analyze |
+| `--geno <FILE>` | Genotype dosage file (TSV: marker, chr, pos, samples...) |
+| `--pheno <FILE>` | Phenotype file (CSV: sample_id, traits...) |
+| `--out <FILE>` | Output results CSV |
+| `--trait <NAME>` | Trait name to analyze |
+| `--ploidy <INT>` | Ploidy level (e.g., 2, 4, 6) |
 
 ## Options
+
+### Method
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--method <METHOD>` | gwaspoly | GWAS method to use |
 
 ### Analysis Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--ploidy <INT>` | 2 | Ploidy level (2, 4, 6, etc.) |
-| `--models <LIST>` | additive | Genetic models to test (comma-separated) |
-| `--kinship <FILE>` | - | Pre-computed kinship matrix |
+| `--models <LIST>` | additive,general | Genetic models to test (comma-separated) |
+| `--kinship <FILE>` | - | Pre-computed kinship matrix TSV |
 | `--loco` | false | Use Leave-One-Chromosome-Out kinship |
-| `--n-pc <INT>` | 0 | Number of principal components to include |
-| `--covariates <LIST>` | - | Covariate column names (comma-separated) |
+| `--n-pc <INT>` | 0 | Number of principal components to include as fixed effects (P+K model) |
+| `--covariates <LIST>` | - | Covariates from phenotype file (comma-separated) |
+
+### QC Filters
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--min-maf <FLOAT>` | 0.0 | Minimum minor allele frequency (0.0-0.5) |
+| `--max-geno-freq <FLOAT>` | 0.0 | Maximum genotype frequency (0.0-1.0, 0=auto) |
+| `--allow-missing-samples` | false | Allow samples in geno but not in pheno |
+
+### Threshold Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--threshold <METHOD>` | - | Threshold method: bonferroni, m.eff, or fdr |
+| `--alpha <FLOAT>` | 0.05 | Significance level |
 
 ### Output Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--out <FILE>` | stdout | Output file path |
-| `--format <FMT>` | csv | Output format (csv, tsv) |
-
-### Filtering Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--min-maf <FLOAT>` | 0.0 | Minimum minor allele frequency |
-| `--max-missing <FLOAT>` | 1.0 | Maximum missing rate per marker |
+| `--plot <TYPE>` | - | Generate plots: manhattan, qq, or both |
+| `--plot-output <FILE>` | - | Custom path for plot files |
+| `--parallel` | false | Use parallel marker testing |
 
 ## Genetic Models
 
@@ -164,6 +180,32 @@ binx gwas \
   --out results.csv
 ```
 
+### With Threshold Calculation
+
+```bash
+binx gwas \
+  --geno genotypes.tsv \
+  --pheno phenotypes.csv \
+  --trait yield \
+  --ploidy 4 \
+  --models additive,general \
+  --threshold m.eff \
+  --out results.csv
+```
+
+### With Plots
+
+```bash
+binx gwas \
+  --geno genotypes.tsv \
+  --pheno phenotypes.csv \
+  --trait yield \
+  --ploidy 4 \
+  --kinship kinship.tsv \
+  --plot both \
+  --out results.csv
+```
+
 ## Output Format
 
 The output file contains the following columns:
@@ -226,7 +268,11 @@ With `--loco`, the kinship matrix is recalculated for each chromosome, excluding
 
 4. **Filter markers**: Use `--min-maf` to remove rare variants that have low power.
 
-5. **Check QQ plots**: After analysis, generate QQ plots to assess genomic inflation.
+5. **Calculate significance thresholds**: Use `--threshold m.eff` to compute the effective number of tests threshold, which accounts for LD between markers.
+
+6. **Generate plots directly**: Use `--plot both` to generate Manhattan and QQ plots automatically after GWAS completes.
+
+7. **Use parallel mode**: For large datasets, `--parallel` can speed up marker testing.
 
 ## See Also
 
