@@ -64,10 +64,12 @@ METHODS:
 MODELS (for gwaspoly method):
     additive        Linear effect of allele dosage
     general         Separate effect for each dosage class
-    1-dom-ref       Single-dose dominance (reference)
-    1-dom-alt       Single-dose dominance (alternate)
-    2-dom-ref       Double-dose dominance (reference)
-    2-dom-alt       Double-dose dominance (alternate)
+    1-dom           Simplex dominant (tests both ref and alt)
+    1-dom-ref       Simplex dominant (reference only)
+    1-dom-alt       Simplex dominant (alternate only)
+    2-dom           Duplex dominant (tests both ref and alt)
+    2-dom-ref       Duplex dominant (reference only)
+    2-dom-alt       Duplex dominant (alternate only)
     diplo-general   Diploidized general
     diplo-additive  Diploidized additive")]
     Gwas {
@@ -490,15 +492,29 @@ fn main() -> Result<()> {
             });
 
             let covariate_list = covariates.as_deref().map(parse_csv_list);
+            // Parse models, expanding 1-dom and 2-dom to both ref/alt variants (like R/GWASpoly)
             let model_list: Vec<binx_gwas::GeneActionModel> = models
                 .split(',')
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
-                .map(|s| {
-                    binx_gwas::GeneActionModel::from_str(s).unwrap_or_else(|e| {
-                        eprintln!("Invalid model '{}': {}", s, e);
-                        std::process::exit(1);
-                    })
+                .flat_map(|s| {
+                    match s.to_lowercase().as_str() {
+                        // Expand 1-dom to both ref and alt variants (GWASpoly behavior)
+                        "1-dom" | "simplex-dom" => vec![
+                            binx_gwas::GeneActionModel::SimplexDomRef,
+                            binx_gwas::GeneActionModel::SimplexDomAlt,
+                        ],
+                        // Expand 2-dom to both ref and alt variants (GWASpoly behavior)
+                        "2-dom" | "duplex-dom" => vec![
+                            binx_gwas::GeneActionModel::DuplexDomRef,
+                            binx_gwas::GeneActionModel::DuplexDomAlt,
+                        ],
+                        // All other models parsed normally
+                        _ => vec![binx_gwas::GeneActionModel::from_str(s).unwrap_or_else(|e| {
+                            eprintln!("Invalid model '{}': {}", s, e);
+                            std::process::exit(1);
+                        })],
+                    }
                 })
                 .collect();
 

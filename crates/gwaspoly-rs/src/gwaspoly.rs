@@ -64,9 +64,9 @@ impl GeneActionModel {
         match s.to_lowercase().as_str() {
             "additive" => Ok(GeneActionModel::Additive),
             "general" => Ok(GeneActionModel::General),
-            "1-dom-ref" | "simplex-dom-ref" | "1-dom" => Ok(GeneActionModel::SimplexDomRef),
+            "1-dom-ref" | "simplex-dom-ref" => Ok(GeneActionModel::SimplexDomRef),
             "1-dom-alt" | "simplex-dom-alt" => Ok(GeneActionModel::SimplexDomAlt),
-            "2-dom-ref" | "duplex-dom-ref" | "2-dom" => Ok(GeneActionModel::DuplexDomRef),
+            "2-dom-ref" | "duplex-dom-ref" => Ok(GeneActionModel::DuplexDomRef),
             "2-dom-alt" | "duplex-dom-alt" => Ok(GeneActionModel::DuplexDomAlt),
             "diplo-general" => Ok(GeneActionModel::DiploGeneral),
             "diplo-additive" => Ok(GeneActionModel::DiploAdditive),

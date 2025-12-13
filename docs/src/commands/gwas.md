@@ -55,33 +55,43 @@ Key features:
 
 ## Genetic Models
 
-The `--models` option accepts the following values:
+The `--models` option accepts the following values. These match R/GWASpoly's gene action models (Rosyara et al., 2016).
 
 ### For Diploids (ploidy=2)
 
-| Model | Description | Encoding |
-|-------|-------------|----------|
-| `additive` | Additive effects | 0, 1, 2 |
-| `dominant-ref` | Dominance (ref allele) | 0, 1, 1 |
-| `dominant-alt` | Dominance (alt allele) | 0, 0, 1 |
+| Model | Description | Encoding | df |
+|-------|-------------|----------|-----|
+| `additive` | Linear dosage effect | 0, 1, 2 | 1 |
+| `general` | Separate effect per dosage | dummy coded | 2 |
+| `1-dom` | Dominant (tests both ref and alt) | — | 1 each |
+| `1-dom-ref` | Dominant (ref group distinct) | 0, 1, 1 | 1 |
+| `1-dom-alt` | Dominant (alt group distinct) | 0, 0, 1 | 1 |
 
 ### For Tetraploids (ploidy=4)
 
-| Model | Description | Encoding |
-|-------|-------------|----------|
-| `additive` | Additive effects | 0, 1, 2, 3, 4 |
-| `general` | General (4 df) | 4 dummy variables |
-| `simplex-dom` | Simplex dominant | 0, 1, 1, 1, 1 |
-| `duplex-dom` | Duplex dominant | 0, 0, 1, 1, 1 |
-| `diplo-add` | Diploidized additive | 0, 0.5, 1, 1.5, 2 |
-| `diplo-dom` | Diploidized dominant | 0, 0, 1, 1, 1 |
+| Model | Description | Encoding | df |
+|-------|-------------|----------|-----|
+| `additive` | Linear dosage effect | 0, 1, 2, 3, 4 | 1 |
+| `general` | Separate effect per dosage | dummy coded | 4 |
+| `1-dom` | Simplex dominant (tests both ref and alt) | — | 1 each |
+| `1-dom-ref` | Simplex dominant (ref group distinct) | 0, 1, 1, 1, 1 | 1 |
+| `1-dom-alt` | Simplex dominant (alt group distinct) | 0, 0, 0, 0, 1 | 1 |
+| `2-dom` | Duplex dominant (tests both ref and alt) | — | 1 each |
+| `2-dom-ref` | Duplex dominant (ref side distinct) | 0, 0, 1, 1, 1 | 1 |
+| `2-dom-alt` | Duplex dominant (alt side distinct) | 0, 0, 0, 1, 1 | 1 |
+| `diplo-general` | Diploidized general (hets collapsed) | dummy coded | 2 |
+| `diplo-additive` | Diploidized additive (hets = 0.5) | 0, 0.5, 0.5, 0.5, 1 | 1 |
+
+### Model Expansion
+
+Like R/GWASpoly, specifying `1-dom` automatically tests both `1-dom-ref` and `1-dom-alt`. Similarly, `2-dom` expands to both `2-dom-ref` and `2-dom-alt`. Use the specific `-ref` or `-alt` variants if you only want one direction.
 
 ### Using Multiple Models
 
 Specify multiple models separated by commas:
 
 ```bash
-binx gwas --models additive,general,simplex-dom ...
+binx gwas --models additive,general,1-dom,2-dom ...
 ```
 
 See [Genetic Models Reference](../reference/genetic-models.md) for detailed explanations.
@@ -103,7 +113,7 @@ binx gwas \
 
 ```bash
 # First compute kinship
-binx kinship --geno genotypes.tsv --output kinship.tsv
+binx kinship --geno genotypes.tsv --out kinship.tsv
 
 # Then run GWAS
 binx gwas \
@@ -150,7 +160,7 @@ binx gwas \
   --pheno phenotypes.csv \
   --trait yield \
   --ploidy 4 \
-  --models additive,general,simplex-dom,duplex-dom \
+  --models additive,general,1-dom,2-dom \
   --out results.csv
 ```
 
