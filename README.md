@@ -2,7 +2,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![CI](https://github.com/alex-sandercock/Binx/actions/workflows/release.yml/badge.svg)](https://github.com/alex-sandercock/Binx/actions/workflows/release.yml)
-[![Documentation](https://img.shields.io/badge/docs-readthedocs-blue.svg)](https://binx.readthedocs.io)
+[![Documentation](https://img.shields.io/badge/docs-readthedocs-blue.svg)](https://binx-docs.readthedocs.io)
 
 Rust command-line genomics workbench for diploid and polyploid species. `binx` targets GWAS and related analyses with a familiar UX: fast defaults, explicit inputs, and clear outputs.
 
@@ -95,12 +95,12 @@ binx threshold \
 
 ## Documentation
 
-Full documentation is available at [binx.readthedocs.io](https://binx.readthedocs.io), including:
+Full documentation is available at [binx.readthedocs.io](https://binx-docs.readthedocs.io), including:
 
-- [Getting Started Guide](https://binx.readthedocs.io/getting-started/) - Installation and first steps
-- [Tutorials](https://binx.readthedocs.io/tutorials/) - Step-by-step GWAS analysis walkthroughs
-- [Command Reference](https://binx.readthedocs.io/commands/) - Detailed CLI documentation
-- [Genetic Models](https://binx.readthedocs.io/reference/genetic-models/) - Understanding polyploid GWAS models
+- [Getting Started Guide](https://binx-docs.readthedocs.io/getting-started/) - Installation and first steps
+- [Tutorials](https://binx-docs.readthedocs.io/tutorials/) - Step-by-step GWAS analysis walkthroughs
+- [Command Reference](https://binx-docs.readthedocs.io/commands/) - Detailed CLI documentation
+- [Genetic Models](https://binx-docs.readthedocs.io/reference/genetic-models/) - Understanding polyploid GWAS models
 
 ## Commands
 

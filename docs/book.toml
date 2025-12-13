@@ -16,7 +16,7 @@ preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/alex-sandercock/Binx"
 git-repository-icon = "fa-github"
 edit-url-template = "https://github.com/alex-sandercock/Binx/edit/main/docs/{path}"
-site-url = "/Binx/"
+site-url = "/"
 cname = ""
 input-404 = "404.md"
 
