@@ -1,10 +1,12 @@
-# .readthedocs.yaml
 version: 2
 
 build:
-  os: ubuntu-22.04
+  os: ubuntu-lts-latest
   tools:
-    rust: "stable"
-  commands:
-    - cargo install mdbook
-    - mdbook build docs --dest-dir $READTHEDOCS_OUTPUT/html
+    rust: latest
+  jobs:
+    install:
+      - cargo install mdbook
+    build:
+      html:
+        - mdbook build docs --dest-dir $READTHEDOCS_OUTPUT/html

@@ -2,7 +2,6 @@ name: Build and Release
 
 on:
   push:
-    branches: [main]
     tags: ['v*']
 
 permissions:
@@ -43,13 +42,8 @@ jobs:
       - name: Get version
         id: version
         run: |
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-            echo "filename=binx-${{ github.ref_name }}-${{ matrix.name }}.tar.gz" >> $GITHUB_OUTPUT
-          else
-            echo "version=latest" >> $GITHUB_OUTPUT
-            echo "filename=binx-${{ matrix.name }}.tar.gz" >> $GITHUB_OUTPUT
-          fi
+          echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          echo "filename=binx-${{ github.ref_name }}-${{ matrix.name }}.tar.gz" >> $GITHUB_OUTPUT
 
       - name: Package binary
         run: |
@@ -70,24 +64,11 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
 
-      - name: Determine release info
-        id: release_info
-        run: |
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-            echo "name=Release ${{ github.ref_name }}" >> $GITHUB_OUTPUT
-            echo "prerelease=false" >> $GITHUB_OUTPUT
-          else
-            echo "tag=latest" >> $GITHUB_OUTPUT
-            echo "name=Latest Build" >> $GITHUB_OUTPUT
-            echo "prerelease=true" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Create/Update Release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release_info.outputs.tag }}
-          name: ${{ steps.release_info.outputs.name }}
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
           body: |
             Download and extract for your platform:
             ```bash
@@ -103,4 +84,3 @@ jobs:
             binx-linux-x86_64/*.tar.gz
             binx-macos-x86_64/*.tar.gz
             binx-macos-aarch64/*.tar.gz
-          prerelease: ${{ steps.release_info.outputs.prerelease }}
