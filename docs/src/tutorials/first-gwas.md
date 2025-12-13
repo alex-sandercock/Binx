@@ -17,12 +17,11 @@ This tutorial walks you through a complete GWAS analysis from start to finish us
 
 ## Sample Data
 
-For this tutorial, we'll use a tetraploid potato dataset originally from the R/GWASpoly package:
-- ~1,249 samples (potato breeding lines)
-- ~9,888 SNP markers
-- Trait: vine maturity
+For this tutorial, we'll use a tetraploid potato dataset from the R/GWASpoly package.
 
-This dataset is included in the Binx repository at `tests/parity/data/potato/`.
+**Download the sample files:**
+- [potato_geno.csv](https://raw.githubusercontent.com/alex-sandercock/Binx/main/potato_geno.csv) - Genotype data (~9,888 markers, ~1,249 samples)
+- [potato_pheno.csv](https://raw.githubusercontent.com/alex-sandercock/Binx/main/potato_pheno.csv) - Phenotype data (vine maturity trait)
 
 > **Citation:** Rosyara, U.R., De Jong, W.S., Douches, D.S., & Endelman, J.B. (2016). Software for genome-wide association studies in autopolyploids and its application to potato. *The Plant Genome* 9(2).
 
@@ -32,7 +31,7 @@ First, let's look at our input files:
 
 ```bash
 # Check genotype file structure
-head -3 tests/parity/data/potato/new_potato_geno.csv
+head -3 potato_geno.csv
 ```
 
 ```
@@ -43,7 +42,7 @@ solcap_snp_c2_36658,chr01,527068,4,3,2,...
 
 ```bash
 # Check phenotype file
-head -5 tests/parity/data/potato/new_potato_pheno.csv
+head -5 potato_pheno.csv
 ```
 
 ```csv
@@ -58,19 +57,19 @@ Verify sample counts match:
 
 ```bash
 # Count samples in genotype file (columns - 3)
-head -1 tests/parity/data/potato/new_potato_geno.csv | awk -F',' '{print NF-3, "samples"}'
+head -1 potato_geno.csv | awk -F',' '{print NF-3, "samples"}'
 
 # Count samples in phenotype file (lines - 1)
-wc -l < tests/parity/data/potato/new_potato_pheno.csv | awk '{print $1-1, "samples"}'
+wc -l < potato_pheno.csv | awk '{print $1-1, "samples"}'
 ```
 
-## Step 2: Compute Kinship Matrix
+## Step 2: Compute Kinship Matrix (Optional)
 
-The kinship matrix captures genetic relationships. Computing it separately allows reuse across multiple traits:
+The kinship matrix captures genetic relationships. While Binx can auto-generate this using gwaspoly-rs's `set_k()` function, computing it separately allows reuse across multiple traits:
 
 ```bash
 binx kinship \
-  --geno tests/parity/data/potato/new_potato_geno.csv \
+  --geno potato_geno.csv \
   --ploidy 4 \
   --output kinship.tsv
 ```
@@ -90,8 +89,8 @@ Now run the association analysis:
 
 ```bash
 binx gwas \
-  --geno tests/parity/data/potato/new_potato_geno.csv \
-  --pheno tests/parity/data/potato/new_potato_pheno.csv \
+  --geno potato_geno.csv \
+  --pheno potato_pheno.csv \
   --trait vine.maturity \
   --kinship kinship.tsv \
   --ploidy 4 \
@@ -127,21 +126,24 @@ Key columns:
 
 ## Step 4: Calculate Significance Threshold
 
-Determine the significance threshold:
+Determine the significance threshold using M.eff (recommended, accounts for LD):
 
 ```bash
 binx threshold \
   --results gwas_results.csv \
-  --method bonferroni \
+  --method m.eff \
+  --geno potato_geno.csv \
+  --ploidy 4 \
   --alpha 0.05
 ```
 
 Output:
 ```
-Method: Bonferroni
+Method: M.eff
 Number of tests: 9886
-P-value threshold: 5.06e-06
--log10(p) threshold: 5.30
+Effective tests (M.eff): 6234
+P-value threshold: 8.02e-06
+-log10(p) threshold: 5.10
 ```
 
 ## Step 5: Create Visualizations
@@ -153,7 +155,7 @@ binx plot \
   --input gwas_results.csv \
   --plot-type manhattan \
   --model additive \
-  --threshold 5.3 \
+  --threshold 5.1 \
   --title "Vine Maturity GWAS" \
   --output manhattan.png
 ```
@@ -189,13 +191,13 @@ First, run GWAS with threshold calculation to get a threshold column:
 
 ```bash
 binx gwas \
-  --geno tests/parity/data/potato/new_potato_geno.csv \
-  --pheno tests/parity/data/potato/new_potato_pheno.csv \
+  --geno potato_geno.csv \
+  --pheno potato_pheno.csv \
   --trait vine.maturity \
   --kinship kinship.tsv \
   --ploidy 4 \
   --models additive \
-  --threshold bonferroni \
+  --threshold m.eff \
   --out gwas_results.csv
 ```
 
@@ -214,8 +216,8 @@ cat significant_qtls.csv
 
 ```csv
 marker_id,chrom,pos,model,score,effect,threshold
-solcap_snp_c2_25522,chr05,4561232,additive,6.12,0.52,5.30
-PotVar0067031,chr05,5193547,additive,5.89,0.48,5.30
+solcap_snp_c2_25522,chr05,4561232,additive,6.12,0.52,5.10
+PotVar0067031,chr05,5193547,additive,5.89,0.48,5.10
 ```
 
 > **Note:** The input file must have a `threshold` column. Use `binx gwas --threshold` to generate results with thresholds.
@@ -243,9 +245,9 @@ Here's the full analysis as a script:
 #!/bin/bash
 set -e
 
-# Configuration - using R/GWASpoly potato dataset
-GENO="tests/parity/data/potato/new_potato_geno.csv"
-PHENO="tests/parity/data/potato/new_potato_pheno.csv"
+# Configuration (using downloaded sample files)
+GENO="potato_geno.csv"
+PHENO="potato_pheno.csv"
 TRAIT="vine.maturity"
 PLOIDY=4
 OUTDIR="results"
@@ -266,7 +268,7 @@ binx gwas \
   --kinship $OUTDIR/kinship.tsv \
   --ploidy $PLOIDY \
   --models additive \
-  --threshold bonferroni \
+  --threshold m.eff \
   --out $OUTDIR/gwas_results.csv
 
 # Step 3: Generate plots

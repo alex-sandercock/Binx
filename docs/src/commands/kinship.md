@@ -12,6 +12,11 @@ binx kinship --geno <FILE> --ploidy <INT> --out <FILE> [OPTIONS]
 
 The `kinship` command computes a genomic relationship matrix (GRM) from marker dosage data. The kinship matrix captures genetic similarity between individuals and is used in GWAS to account for population structure and relatedness.
 
+> **When to use:** While `binx gwas` auto-generates a kinship matrix if not provided (using gwaspoly-rs's `set_k()`), pre-computing with `binx kinship` is recommended when:
+> - Running GWAS on multiple traits (avoids recomputation)
+> - You need a specific kinship method (VanRaden vs GWASpoly)
+> - You want to inspect or reuse the kinship matrix
+
 ## Required Arguments
 
 | Argument | Description |

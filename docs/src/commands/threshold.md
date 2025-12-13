@@ -12,6 +12,8 @@ binx threshold --results <FILE> --method <METHOD> [OPTIONS]
 
 The `threshold` command calculates significance thresholds for GWAS using various multiple testing correction methods. It accounts for the number of tests performed and optionally the correlation structure among markers.
 
+> **Recommendation:** Use `m.eff` for the most accurate threshold as it accounts for linkage disequilibrium (LD) between markers. For large datasets where speed is a concern, `bonferroni` or `fdr` are faster alternatives that don't require genotype data.
+
 ## Required Arguments
 
 | Argument | Description |
@@ -31,7 +33,7 @@ The `threshold` command calculates significance thresholds for GWAS using variou
 
 ### Bonferroni
 
-The most conservative approach:
+The most conservative approach. Fast for large datasets as it doesn't require genotype data:
 
 ```
 threshold = α / n_tests
@@ -44,9 +46,9 @@ binx threshold \
   --alpha 0.05
 ```
 
-### Effective Number of Tests (M.eff)
+### Effective Number of Tests (M.eff) — Recommended
 
-Accounts for LD between markers using the method of Moskvina & Schmidt (2008). Requires genotype data to calculate marker correlations.
+Accounts for LD between markers using the method of Moskvina & Schmidt (2008). Requires genotype data to calculate marker correlations. This is the most accurate method as it adjusts for correlation between markers.
 
 ```bash
 binx threshold \
@@ -59,7 +61,7 @@ binx threshold \
 
 ### FDR (Benjamini-Hochberg)
 
-False Discovery Rate control:
+False Discovery Rate control. Fast for large datasets as it doesn't require genotype data:
 
 ```bash
 binx threshold \

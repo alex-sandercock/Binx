@@ -41,10 +41,12 @@ Key features:
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--models <LIST>` | additive,general | Genetic models to test (comma-separated) |
-| `--kinship <FILE>` | - | Pre-computed kinship matrix TSV |
+| `--kinship <FILE>` | - | Pre-computed kinship matrix TSV (optional; auto-generated if omitted) |
 | `--loco` | false | Use Leave-One-Chromosome-Out kinship |
 | `--n-pc <INT>` | 0 | Number of principal components to include as fixed effects (P+K model) |
 | `--covariates <LIST>` | - | Covariates from phenotype file (comma-separated) |
+
+> **Note:** If `--kinship` is not provided, Binx automatically computes a kinship matrix using gwaspoly-rs's `set_k()` function (equivalent to R/GWASpoly's `set.K()`). Pre-computing with `binx kinship` is recommended when running multiple traits to avoid redundant computation.
 
 ### QC Filters
 
@@ -58,7 +60,7 @@ Key features:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--threshold <METHOD>` | - | Threshold method: bonferroni, m.eff, or fdr |
+| `--threshold <METHOD>` | - | Threshold method: m.eff (recommended), bonferroni, or fdr |
 | `--alpha <FLOAT>` | 0.05 | Significance level |
 
 ### Output Options
