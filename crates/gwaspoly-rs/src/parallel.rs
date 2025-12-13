@@ -237,6 +237,13 @@ fn design_score_parallel(
         return None;
     }
 
+    // Impute missing values with mean dosage (matches R/GWASpoly behavior)
+    let mean_dosage = valid_sum / (valid_n as f64);
+    let dosage: Vec<f64> = dosage
+        .iter()
+        .map(|&d| if d.is_finite() { d } else { mean_dosage })
+        .collect();
+
     let rounded: Vec<i64> = dosage.iter().map(|&d| d.round() as i64).collect();
 
     let mut counts: HashMap<i64, usize> = HashMap::new();
@@ -250,7 +257,8 @@ fn design_score_parallel(
             if max_freq > max_geno_freq {
                 return None;
             }
-            Some(vec![dosage.to_vec()])
+            // Use imputed dosages (missing values replaced with marker mean)
+            Some(vec![dosage.clone()])
         }
 
         GeneActionModel::General => {
@@ -403,6 +411,7 @@ fn check_binary_column_parallel(col: &[f64], max_geno_freq: f64) -> Option<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nalgebra::DMatrix;
     use ndarray::{array, Array2};
 
     fn create_test_cache(n: usize) -> GwasCache {
