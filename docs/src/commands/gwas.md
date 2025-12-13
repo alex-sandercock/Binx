@@ -22,11 +22,13 @@ Key features:
 
 | Argument | Description |
 |----------|-------------|
-| `--geno <FILE>` | Genotype dosage file (TSV: marker, chr, pos, samples...) |
+| `--geno <FILE>` | Genotype dosage file (TSV: marker, chr, pos, samples...). Missing values (NA) are imputed with marker mean. |
 | `--pheno <FILE>` | Phenotype file (CSV: sample_id, traits...) |
 | `--out <FILE>` | Output results CSV |
 | `--trait <NAME>` | Trait name to analyze |
 | `--ploidy <INT>` | Ploidy level (e.g., 2, 4, 6) |
+
+> **Missing Value Handling:** Missing genotype values (NA) are automatically imputed with the marker mean. This matches the default behavior of R/GWASpoly.
 
 ## Options
 

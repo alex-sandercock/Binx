@@ -79,7 +79,7 @@ MODELS (for gwaspoly method):
         method: String,
 
         // === Input/Output ===
-        /// Genotype dosage file (TSV: marker, chr, pos, samples...)
+        /// Genotype dosage file (TSV: marker, chr, pos, samples...). Missing values (NA) are imputed with marker mean.
         #[arg(long, help_heading = "Input/Output")]
         geno: String,
 

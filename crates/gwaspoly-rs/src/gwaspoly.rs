@@ -652,6 +652,13 @@ pub(crate) fn design_score(
         return None;
     }
 
+    // Impute missing values with mean dosage (matches R/GWASpoly behavior)
+    let mean_dosage = valid_sum / (valid_n as f64);
+    let dosage: Vec<f64> = dosage
+        .iter()
+        .map(|&d| if d.is_finite() { d } else { mean_dosage })
+        .collect();
+
     // Round dosages to integers for categorical models
     let rounded: Vec<i64> = dosage.iter().map(|&d| d.round() as i64).collect();
 
@@ -668,8 +675,8 @@ pub(crate) fn design_score(
             if max_freq > max_geno_freq {
                 return None;
             }
-            // Use original (possibly fractional) dosages
-            Some(vec![dosage.to_vec()])
+            // Use imputed dosages (missing values replaced with marker mean)
+            Some(vec![dosage.clone()])
         }
 
         GeneActionModel::General => {
