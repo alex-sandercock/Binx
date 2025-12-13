@@ -1,0 +1,227 @@
+# binx gwas
+
+Perform genome-wide association studies (GWAS) using GWASpoly-style methods with support for multiple genetic models.
+
+## Synopsis
+
+```bash
+binx gwas [OPTIONS] --geno <FILE> --pheno <FILE> --trait <NAME>
+```
+
+## Description
+
+The `gwas` command performs association analysis between genetic markers and phenotypic traits. It implements the statistical methods from GWASpoly (Rosyara et al., 2016) and rrBLUP (Endelman, 2011), supporting both diploid and polyploid species.
+
+Key features:
+- Multiple genetic models for polyploid analysis
+- Mixed model framework (K model, P+K model)
+- Leave-One-Chromosome-Out (LOCO) kinship
+- Support for covariates and multi-environment trials
+
+## Required Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `--geno <FILE>` | Path to genotype file (TSV/CSV with dosages) |
+| `--pheno <FILE>` | Path to phenotype file (TSV/CSV) |
+| `--trait <NAME>` | Name of the trait column to analyze |
+
+## Options
+
+### Analysis Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--ploidy <INT>` | 2 | Ploidy level (2, 4, 6, etc.) |
+| `--models <LIST>` | additive | Genetic models to test (comma-separated) |
+| `--kinship <FILE>` | - | Pre-computed kinship matrix |
+| `--loco` | false | Use Leave-One-Chromosome-Out kinship |
+| `--n-pc <INT>` | 0 | Number of principal components to include |
+| `--covariates <LIST>` | - | Covariate column names (comma-separated) |
+
+### Output Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--out <FILE>` | stdout | Output file path |
+| `--format <FMT>` | csv | Output format (csv, tsv) |
+
+### Filtering Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--min-maf <FLOAT>` | 0.0 | Minimum minor allele frequency |
+| `--max-missing <FLOAT>` | 1.0 | Maximum missing rate per marker |
+
+## Genetic Models
+
+The `--models` option accepts the following values:
+
+### For Diploids (ploidy=2)
+
+| Model | Description | Encoding |
+|-------|-------------|----------|
+| `additive` | Additive effects | 0, 1, 2 |
+| `dominant-ref` | Dominance (ref allele) | 0, 1, 1 |
+| `dominant-alt` | Dominance (alt allele) | 0, 0, 1 |
+
+### For Tetraploids (ploidy=4)
+
+| Model | Description | Encoding |
+|-------|-------------|----------|
+| `additive` | Additive effects | 0, 1, 2, 3, 4 |
+| `general` | General (4 df) | 4 dummy variables |
+| `simplex-dom` | Simplex dominant | 0, 1, 1, 1, 1 |
+| `duplex-dom` | Duplex dominant | 0, 0, 1, 1, 1 |
+| `diplo-add` | Diploidized additive | 0, 0.5, 1, 1.5, 2 |
+| `diplo-dom` | Diploidized dominant | 0, 0, 1, 1, 1 |
+
+### Using Multiple Models
+
+Specify multiple models separated by commas:
+
+```bash
+binx gwas --models additive,general,simplex-dom ...
+```
+
+See [Genetic Models Reference](../reference/genetic-models.md) for detailed explanations.
+
+## Examples
+
+### Basic GWAS
+
+```bash
+binx gwas \
+  --geno genotypes.tsv \
+  --pheno phenotypes.csv \
+  --trait yield \
+  --ploidy 4 \
+  --out results.csv
+```
+
+### With Pre-computed Kinship
+
+```bash
+# First compute kinship
+binx kinship --geno genotypes.tsv --output kinship.tsv
+
+# Then run GWAS
+binx gwas \
+  --geno genotypes.tsv \
+  --pheno phenotypes.csv \
+  --trait yield \
+  --kinship kinship.tsv \
+  --ploidy 4 \
+  --out results.csv
+```
+
+### LOCO Analysis
+
+Leave-One-Chromosome-Out reduces proximal contamination:
+
+```bash
+binx gwas \
+  --geno genotypes.tsv \
+  --pheno phenotypes.csv \
+  --trait yield \
+  --ploidy 4 \
+  --loco \
+  --out results.csv
+```
+
+### With Covariates and PCs
+
+```bash
+binx gwas \
+  --geno genotypes.tsv \
+  --pheno phenotypes.csv \
+  --trait yield \
+  --covariates environment,block \
+  --n-pc 3 \
+  --ploidy 4 \
+  --out results.csv
+```
+
+### Multiple Genetic Models
+
+```bash
+binx gwas \
+  --geno genotypes.tsv \
+  --pheno phenotypes.csv \
+  --trait yield \
+  --ploidy 4 \
+  --models additive,general,simplex-dom,duplex-dom \
+  --out results.csv
+```
+
+## Output Format
+
+The output file contains the following columns:
+
+| Column | Description |
+|--------|-------------|
+| `marker_id` | Marker identifier |
+| `chrom` | Chromosome |
+| `pos` | Base pair position |
+| `model` | Genetic model used |
+| `effect` | Effect size estimate |
+| `stderr` | Standard error of effect |
+| `pvalue` | Association p-value |
+| `log10p` | -log10(p-value) |
+| `maf` | Minor allele frequency |
+| `n` | Sample size (non-missing) |
+
+### Example Output
+
+```csv
+marker_id,chrom,pos,model,effect,stderr,pvalue,log10p,maf,n
+SNP_1_1000,1,1000,additive,0.523,0.124,3.21e-05,4.49,0.32,198
+SNP_1_2000,1,2000,additive,0.081,0.112,0.469,0.33,0.28,200
+SNP_1_3500,1,3500,additive,-0.312,0.098,1.45e-03,2.84,0.41,195
+```
+
+## Statistical Details
+
+### Mixed Model
+
+The GWAS uses a linear mixed model:
+
+```
+y = Xβ + Zu + e
+```
+
+Where:
+- `y` = phenotype vector
+- `X` = fixed effects design matrix (intercept, covariates, marker)
+- `β` = fixed effects
+- `Z` = random effects design matrix
+- `u ~ N(0, Kσ²ᵤ)` = random polygenic effects
+- `K` = kinship matrix
+- `e ~ N(0, Iσ²ₑ)` = residual errors
+
+### P+K Model
+
+When `--n-pc` is specified, principal components are included as fixed effects to account for population structure (P+K model).
+
+### LOCO
+
+With `--loco`, the kinship matrix is recalculated for each chromosome, excluding markers on the chromosome being tested. This prevents the tested marker from influencing its own significance through the kinship matrix.
+
+## Tips and Best Practices
+
+1. **Choose appropriate models**: For autopolyploids, start with `additive` and `general`. The general model captures complex dominance patterns but uses more degrees of freedom.
+
+2. **Use LOCO for accurate p-values**: LOCO prevents proximal contamination and generally provides better-calibrated p-values.
+
+3. **Pre-compute kinship for efficiency**: If running multiple traits, compute the kinship matrix once and reuse it.
+
+4. **Filter markers**: Use `--min-maf` to remove rare variants that have low power.
+
+5. **Check QQ plots**: After analysis, generate QQ plots to assess genomic inflation.
+
+## See Also
+
+- [binx kinship](kinship.md) - Compute kinship matrices
+- [binx plot](plot.md) - Visualize GWAS results
+- [binx qtl](qtl.md) - Extract significant QTLs
+- [Genetic Models Reference](../reference/genetic-models.md)
