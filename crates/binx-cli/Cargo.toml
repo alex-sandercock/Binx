@@ -1,6 +1,6 @@
 [package]
 name = "binx-cli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "CLI frontend for the binx genomic analysis toolkit"
@@ -16,7 +16,7 @@ binx-types = { path = "../binx-types" }
 binx-multigwas = { path = "../binx-multigwas" }
 binx-kinship = { path = "../binx-kinship" }
 binx-dosage = { path = "../binx-dosage" }
-binx-plotting = { path = "../binx-plotting" }
+binx-plotting = { path = "../binx-plotting", features = ["png"] }
 binx-gwas = { path = "../binx-gwas" }
 gwaspoly-rs = { path = "../gwaspoly-rs" }
 
