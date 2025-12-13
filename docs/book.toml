@@ -1,7 +1,6 @@
 [book]
 authors = ["Alex Sandercock"]
 language = "en"
-multilingual = false
 src = "src"
 title = "Binx Documentation"
 description = "A Rust-based CLI tool for polyploid and diploid genomic analysis"
