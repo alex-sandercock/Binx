@@ -12,7 +12,7 @@ genomic analysis. GitHub repository: https://github.com/alex-sandercock/Binx
 BibTeX:
 ```bibtex
 @software{sandercock2025binx,
-  author = {Sandercock, Alex M.},
+  author = {Sandercock, Alexander M.},
   title = {Binx: A Rust-based CLI tool for polyploid and diploid genomic analysis},
   year = {2025},
   url = {https://github.com/alex-sandercock/Binx}
