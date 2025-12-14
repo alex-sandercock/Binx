@@ -249,6 +249,34 @@ pub fn load_genotypes<P: AsRef<Path>>(path: P, ploidy: u8) -> Result<GenotypeMat
 
     let sample_ids: Vec<String> = header_strings[3..].to_vec();
 
+    // Check if this looks like a GWAS results file instead of genotype data
+    let gwas_columns = ["model", "score", "p_value", "effect", "n_obs", "threshold"];
+    let sample_lower: Vec<String> = sample_ids.iter().map(|s| s.to_lowercase()).collect();
+    let gwas_matches: Vec<&str> = gwas_columns
+        .iter()
+        .filter(|&&col| sample_lower.contains(&col.to_string()))
+        .copied()
+        .collect();
+    if gwas_matches.len() >= 2 {
+        return Err(anyhow!(
+            "Input file appears to be GWAS results, not genotype data.\n\
+             Detected GWAS columns: {:?}\n\
+             This function requires genotype dosage data with format:\n\
+             marker_id, chr, pos, sample1, sample2, ...\n\
+             Use your original genotype file, not the GWAS output CSV.",
+            gwas_matches
+        ));
+    }
+
+    // Warn if suspiciously few samples (likely wrong file type)
+    if sample_ids.len() < 10 {
+        eprintln!(
+            "Warning: Only {} sample columns detected. If this seems wrong, \
+             ensure you're using a genotype file (not GWAS results).",
+            sample_ids.len()
+        );
+    }
+
     let mut marker_ids = Vec::new();
     let mut marker_metadata = Vec::new();
     let mut dosage_rows: Vec<Vec<f64>> = Vec::new();

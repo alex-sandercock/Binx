@@ -82,6 +82,8 @@ binx plot \
   --output ld_decay.svg
 ```
 
+> **Important:** LD plots require **genotype data** (dosage matrix), not GWAS results. The input file must have the format: `marker_id, chr, pos, sample1, sample2, ...` where sample columns contain dosage values. If you accidentally use a GWAS results file, all r² values will appear as 1.0 because the statistical columns are misinterpreted as samples.
+
 LD plot specific options:
 
 | Option | Default | Description |
