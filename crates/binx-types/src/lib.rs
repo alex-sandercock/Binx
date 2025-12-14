@@ -656,6 +656,34 @@ pub fn load_genotypes_biallelic_from_tsv<P: AsRef<Path>>(
     // Sample IDs start at index 3.
     let sample_ids: Vec<String> = header_strings[3..].to_vec();
 
+    // Check if this looks like a GWAS results file instead of genotype data
+    let gwas_columns = ["model", "score", "p_value", "effect", "n_obs", "threshold"];
+    let sample_lower: Vec<String> = sample_ids.iter().map(|s| s.to_lowercase()).collect();
+    let gwas_matches: Vec<&str> = gwas_columns
+        .iter()
+        .filter(|&&col| sample_lower.contains(&col.to_string()))
+        .copied()
+        .collect();
+    if gwas_matches.len() >= 2 {
+        return Err(anyhow!(
+            "Input file appears to be GWAS results, not genotype data.\n\
+             Detected GWAS columns: {:?}\n\
+             LD plots require genotype dosage data with format:\n\
+             marker_id, chr, pos, sample1, sample2, ...\n\
+             Use your original genotype file, not the GWAS output CSV.",
+            gwas_matches
+        ));
+    }
+
+    // Warn if suspiciously few samples (likely wrong file type)
+    if sample_ids.len() < 10 {
+        eprintln!(
+            "Warning: Only {} sample columns detected. If this seems wrong, \
+             ensure you're using a genotype file (not GWAS results).",
+            sample_ids.len()
+        );
+    }
+
     let mut marker_ids = Vec::new();
     let mut marker_metadata = Vec::new();
     let mut dosage_rows: Vec<Vec<f64>> = Vec::new();
@@ -815,5 +843,37 @@ mod tests {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         writeln!(f, "a,b,c").unwrap();
         assert_eq!(detect_delimiter(f.path()).unwrap(), b',');
+    }
+
+    #[test]
+    fn test_gwas_file_detection() {
+        use std::io::Write;
+
+        // Create a GWAS output file (should be rejected)
+        let mut gwas_file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(gwas_file, "marker_id,chrom,pos,model,score,p_value,effect,n_obs,threshold").unwrap();
+        writeln!(gwas_file, "snp1,chr1,1000,additive,5.2,0.00001,0.1,100,4.0").unwrap();
+
+        let result = load_genotypes_biallelic_from_tsv(gwas_file.path(), 4);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("GWAS results"), "Error should mention GWAS results: {}", err_msg);
+    }
+
+    #[test]
+    fn test_valid_genotype_file() {
+        use std::io::Write;
+
+        // Create a valid genotype file (should be accepted)
+        let mut geno_file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(geno_file, "marker_id,chr,pos,sample1,sample2,sample3,sample4,sample5,sample6,sample7,sample8,sample9,sample10").unwrap();
+        writeln!(geno_file, "snp1,chr1,1000,0,1,2,1,0,2,1,1,0,1").unwrap();
+        writeln!(geno_file, "snp2,chr1,2000,1,1,1,2,0,1,0,2,1,0").unwrap();
+
+        let result = load_genotypes_biallelic_from_tsv(geno_file.path(), 4);
+        assert!(result.is_ok(), "Valid genotype file should be accepted: {:?}", result.err());
+        let geno = result.unwrap();
+        assert_eq!(geno.marker_ids.len(), 2);
+        assert_eq!(geno.sample_ids.len(), 10);
     }
 }

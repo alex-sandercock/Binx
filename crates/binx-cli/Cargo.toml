@@ -1,6 +1,6 @@
 [package]
 name = "binx-cli"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "CLI frontend for the binx genomic analysis toolkit"
