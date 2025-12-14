@@ -80,7 +80,7 @@ No assumption about inheritance pattern. Estimates separate effects for each gen
 
 **Use when:** Exploring inheritance pattern; hypothesis generation.
 
-**Note:** Uses more degrees of freedom, reducing power but catching complex patterns.
+**Note:** Performs a single joint test of all 4 dummy variables simultaneously, using more degrees of freedom. This reduces power compared to additive but can detect complex inheritance patterns.
 
 ### 1-dom (Simplex Dominant)
 

@@ -168,17 +168,12 @@ Low-frequency variants in polyploids can still be informative.
 
 ### Interpreting Effect Sizes
 
-Effect sizes in polyploid models:
+Effect sizes are reported for single-parameter models:
 
-- **Additive**: Effect per dosage unit
-- **General model**: Reports multiple effects (one per genotype class)
+- **Additive**: Effect per dosage unit (in trait units)
+- **Dominance models** (1-dom, 2-dom, etc.): Effect of the dominant group vs reference
 
-To get standardized effects:
-
-```bash
-# Effects are in trait units per dosage
-# Multiply by ploidy for total genetic range
-```
+**Note:** The general model does not report effect sizes because it performs a joint test of multiple parameters. Use it for detecting associations with complex inheritance, then follow up with specific models to estimate effects.
 
 ## Diploidized Analysis
 
