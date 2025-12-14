@@ -95,7 +95,7 @@ binx threshold \
 
 ## Documentation
 
-Full documentation is available at [binx.readthedocs.io](https://binx-docs.readthedocs.io), including:
+Full documentation is available at [binx-docs.readthedocs.io](https://binx-docs.readthedocs.io), including:
 
 - [Getting Started Guide](https://binx-docs.readthedocs.io/getting-started/) - Installation and first steps
 - [Tutorials](https://binx-docs.readthedocs.io/tutorials/) - Step-by-step GWAS analysis walkthroughs

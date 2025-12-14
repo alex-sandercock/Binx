@@ -10,14 +10,14 @@ build-dir = "book"
 create-missing = true
 
 [output.html]
-default-theme = "light"
+default-theme = "rust"
 preferred-dark-theme = "navy"
+additional-css = ["theme/footer.css"]
+additional-js = ["theme/footer.js"]
 git-repository-url = "https://github.com/alex-sandercock/Binx"
-git-repository-icon = "fa-github"
 edit-url-template = "https://github.com/alex-sandercock/Binx/edit/main/docs/{path}"
 site-url = "/"
 cname = ""
-input-404 = "404.md"
 
 [output.html.fold]
 enable = true
@@ -33,7 +33,6 @@ line-numbers = true
 enable = true
 limit-results = 30
 teaser-word-count = 30
-use-hierarchical-toc = true
 boost-title = 2
 boost-hierarchy = 1
 boost-paragraph = 1

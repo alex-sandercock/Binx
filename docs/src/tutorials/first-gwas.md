@@ -286,7 +286,7 @@ echo "Done! Results in $OUTDIR/"
 ## Next Steps
 
 - Try different [genetic models](../reference/genetic-models.md)
-- Use [LOCO](gwas.md#loco-analysis) for better p-value calibration
+- Use [LOCO](../commands/gwas.md#loco-analysis) for better p-value calibration
 - Analyze [multiple environments](multi-environment.md)
 - Explore [polyploid-specific models](polyploid-analysis.md)
 

@@ -1,6 +1,6 @@
 # From VCF to Results
 
-A complete pipeline tutorial showing how to go from raw VCF data to publication-ready GWAS results.
+A complete pipeline tutorial showing a full workflow from raw VCF data to GWAS results.
 
 ## Overview
 
