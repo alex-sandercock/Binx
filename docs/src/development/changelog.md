@@ -2,6 +2,23 @@
 
 All notable changes to Binx are documented here.
 
+## [0.2.2] - 2025-12-18
+
+### Fixed
+
+- **binx-dosage**: Fixed GT field generation in VCF output - genotype was incorrectly interpreted as alternate allele count instead of reference allele count, causing inverted genotype calls
+- **binx-io/binx-types**: Added LD plot input validation
+
+---
+
+## [0.2.1] - 2025-12-17
+
+### Fixed
+
+- **gwaspoly-rs**: Fixed handling of missing values in GWAS analysis
+
+---
+
 ## [0.1.0] - 2025-12-12
 
 ### Added
