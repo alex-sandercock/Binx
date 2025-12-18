@@ -84,12 +84,12 @@ pub fn write_chunk(
     Ok(())
 }
 
-/// Converts a genotype (0, 1, 2, ...) to VCF GT format based on ploidy.
-/// For diploid (ploidy=2): 0 -> 0/0, 1 -> 0/1, 2 -> 1/1
-/// For tetraploid (ploidy=4): 0 -> 0/0/0/0, 1 -> 0/0/0/1, etc.
+/// Converts a genotype (reference allele count: 0, 1, 2, ...) to VCF GT format.
+/// For diploid (ploidy=2): 0 -> 1/1, 1 -> 0/1, 2 -> 0/0
+/// For tetraploid (ploidy=4): 0 -> 1/1/1/1, 1 -> 0/1/1/1, etc.
 fn genotype_to_vcf(genotype: usize, ploidy: usize) -> String {
-    let num_alt = genotype;
-    let num_ref = ploidy - num_alt;
+    let num_ref = genotype;  // genotype is the reference allele count
+    let num_alt = ploidy - num_ref;
 
     let mut alleles = vec!["0"; num_ref];
     alleles.extend(vec!["1"; num_alt]);
